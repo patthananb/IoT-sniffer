@@ -266,8 +266,11 @@ function PacketList({ packets, selectedId, onSelect, filter, setFilter, autoscro
 }
 
 // ---------- decode drawer ----------
+const isPrint = b => b >= 0x20 && b <= 0x7E;
+
 function DecodeDrawer({ packet, onClose }) {
   const [hover, setHover] = useState(null);
+  const [showAscii, setShowAscii] = useState(true);
 
   if (!packet) return null;
   const fieldMap = packet.fieldMap || [];
@@ -284,6 +287,13 @@ function DecodeDrawer({ packet, onClose }) {
   fieldMap.forEach((f, fi) => {
     (f.bytes || []).forEach(b => { if (byteGroup[b] == null) byteGroup[b] = { g: f.group, fi }; });
   });
+
+  // Decode full payload bytes as UTF-8 for the ASCII panel
+  const payloadField = fieldMap.find(f => f.name === 'Payload');
+  const payloadBytes = payloadField ? (payloadField.bytes || []).map(i => bytes[i]).filter(b => b !== undefined) : [];
+  let payloadAscii = '';
+  try { payloadAscii = new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(payloadBytes)); }
+  catch { payloadAscii = payloadBytes.map(b => isPrint(b) ? String.fromCharCode(b) : '.').join(''); }
 
   return (
     <div className="drawer">
@@ -309,7 +319,14 @@ function DecodeDrawer({ packet, onClose }) {
 
       <div className="drawer-body">
         <div className="decode-col">
-          <div className="decode-col-title">Hex · {bytes.length} bytes</div>
+          <div className="decode-col-title">
+            Hex · {bytes.length} bytes
+            <button
+              className={"ascii-toggle" + (showAscii ? " on" : "")}
+              onClick={() => setShowAscii(v => !v)}
+              title="Toggle ASCII column"
+            >ASCII</button>
+          </div>
           <div className="hex-view">
             {rows.map(r => (
               <div className="hex-line" key={r.off}>
@@ -330,9 +347,34 @@ function DecodeDrawer({ packet, onClose }) {
                     );
                   })}
                 </span>
+                {showAscii && (
+                  <span className="hex-ascii">
+                    {r.slice.map((b, i) => {
+                      const abs = r.off + i;
+                      const g = byteGroup[abs];
+                      const hl = hoverBytes.has(abs) ? ' hover' : '';
+                      const print = isPrint(b);
+                      return (
+                        <span
+                          key={i}
+                          className={`hex-ascii-char${print ? '' : ' non-print'}${hl}`}
+                          onMouseEnter={() => g && setHover(g.fi)}
+                          onMouseLeave={() => setHover(null)}
+                          title={`0x${hex(b)} = ${print ? String.fromCharCode(b) : 'non-printable'}`}
+                        >{print ? String.fromCharCode(b) : '·'}</span>
+                      );
+                    })}
+                  </span>
+                )}
               </div>
             ))}
           </div>
+          {payloadAscii && (
+            <div className="ascii-payload">
+              <div className="ascii-payload-title">Payload · decoded</div>
+              <pre className="ascii-payload-body">{payloadAscii}</pre>
+            </div>
+          )}
         </div>
 
         <div className="decode-col">

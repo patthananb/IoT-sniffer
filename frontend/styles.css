@@ -494,6 +494,7 @@ button { font-family: inherit; color: inherit; cursor: pointer; border: 0; backg
   min-height: 0;
 }
 .decode-col-title {
+  display: flex; align-items: center; gap: 8px;
   font-size: 10px; font-weight: 600;
   text-transform: uppercase; letter-spacing: 0.1em;
   color: var(--text-dim);
@@ -521,6 +522,69 @@ button { font-family: inherit; color: inherit; cursor: pointer; border: 0; backg
 .hex-byte.g-4 { background: oklch(0.70 0.14 300 / 0.20); color: oklch(0.82 0.14 300); }
 .hex-byte.g-5 { background: oklch(0.50 0.008 240); color: var(--text); }
 .hex-byte.hover, .hex-byte.sel { outline: 1px solid var(--text); outline-offset: 0; }
+
+/* ASCII toggle button */
+.ascii-toggle {
+  margin-left: auto;
+  padding: 1px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.ascii-toggle:hover { background: var(--bg-elev); color: var(--text); }
+.ascii-toggle.on { background: oklch(0.80 0.16 150 / 0.15); color: var(--ok); border-color: var(--ok); }
+
+/* ASCII column in hex dump */
+.hex-ascii {
+  display: flex;
+  border-left: 1px solid var(--border-soft);
+  padding-left: 8px;
+  margin-left: 4px;
+}
+.hex-ascii-char {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  width: 9px;
+  text-align: center;
+  border-radius: 2px;
+  color: oklch(0.78 0.10 150);
+  transition: background 0.1s;
+}
+.hex-ascii-char.non-print { color: var(--text-dim); }
+.hex-ascii-char.hover { background: var(--bg-elev); outline: 1px solid var(--text); outline-offset: 0; }
+
+/* Decoded payload panel */
+.ascii-payload {
+  margin-top: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.ascii-payload-title {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-dim);
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border-soft);
+}
+.ascii-payload-body {
+  margin: 0;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: oklch(0.88 0.08 150);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 120px;
+  overflow-y: auto;
+  background: var(--bg);
+}
 
 .field {
   display: grid;

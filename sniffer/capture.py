@@ -101,7 +101,13 @@ class CaptureEngine:
             return
         ip = pkt[IP]
         tcp = pkt[TCP]
-        payload = bytes(tcp.payload)
+        # Compute the REAL TCP data length from IP header fields.  scapy's
+        # bytes(tcp.payload) also includes Ethernet-layer padding (for ACK-only
+        # segments smaller than the 60-byte minimum frame size), which would
+        # otherwise be fed into the MQTT parser as zero bytes and knock the
+        # stream out of alignment.
+        tcp_data_len = max(0, int(ip.len) - int(ip.ihl) * 4 - int(tcp.dataofs) * 4)
+        payload = bytes(tcp.payload)[:tcp_data_len]
         flow = flow_key(ip.src, int(tcp.sport), ip.dst, int(tcp.dport))
 
         with self._lock:
@@ -161,8 +167,19 @@ class CaptureEngine:
             del st.parse_buf[: frame.total_len]
             self._emit_modbus(flow, frame, ts)
 
+    # Valid MQTT 3.1.1 control-packet type nibbles (type_code 0 and 15 are reserved).
+    _VALID_MQTT_TYPES: frozenset[int] = frozenset(range(1, 15))
+
     def _drain_mqtt(self, flow: FlowTuple, st: FlowState, ts: float, transport: str) -> None:
-        while True:
+        while len(st.parse_buf) >= 2:
+            # Mid-stream resync: skip bytes whose type nibble is not a valid MQTT
+            # control-packet type.  This handles the common case where the sniffer
+            # joins an already-open TCP connection and the first bytes land in the
+            # middle of a PUBLISH payload (type nibble = 0 → RESERVED_0).
+            type_nibble = (st.parse_buf[0] >> 4) & 0x0F
+            if type_nibble not in self._VALID_MQTT_TYPES:
+                del st.parse_buf[:1]
+                continue
             frame = parse_mqtt(bytes(st.parse_buf))
             if frame is None:
                 break
