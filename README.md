@@ -14,6 +14,34 @@ Modbus error rate, MQTT reconnects) and pushes both decoded frames and a
 1 Hz metrics snapshot to the browser over WebSocket. The frontend is a
 three-panel dark-theme dashboard served as static HTML.
 
+## Screenshots
+
+**Packet stream** — live table with protocol-colored rows, decode drawer
+on row click, right-rail metrics (throughput, p50/p95/p99 latency,
+errors, reconnects, top talkers):
+
+![Packet stream](docs/screenshots/packet-stream.png)
+
+**Connection graph · Sequence** — UML-style sequence diagram with device
+lifelines at the top, vertical time axis flowing down, and per-message
+arrows colored by protocol (dashed for MQTT/WS, red for errors):
+
+![Sequence view](docs/screenshots/graph-sequence.png)
+
+**Connection graph · Topology** — devices grouped left-to-right by role
+(PLCs → control room → brokers → edge → sensors); edges curve per
+protocol so parallel flows between the same pair don't overlap; edge
+thickness scales with packet count:
+
+![Topology view](docs/screenshots/graph-topology.png)
+
+**Connection graph · Matrix** — circular complete-graph on the left
+paired with an adjacency table on the right; cells shaded by packet
+count and tinted by dominant protocol, with cross-highlighting between
+the two:
+
+![Matrix view](docs/screenshots/graph-matrix.png)
+
 ```
 ┌──────────────── sniffer package ────────────────┐        ┌──────── frontend ────────┐
 │                                                 │        │                          │
@@ -88,6 +116,9 @@ Then open <http://localhost:8080/>.
   bottom-right shows the connection state and auto-reconnects.
 - Demo mode: append `?demo=1` to the URL to use the built-in synthesizer
   — useful when you want to see the UI without running capture.
+- Deep links: `?tab=graph` opens the Connection graph tab directly;
+  `?view=sequence|topology|matrix` picks one of the three graph modes.
+  Params compose, e.g. `?demo=1&tab=graph&view=topology`.
 
 ## WebSocket push format
 

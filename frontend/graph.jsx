@@ -654,7 +654,11 @@ function CircularGraph({ ips, pairMat, devMap, hoverNode, setHoverNode, hoverCel
 
 // ---------- WRAPPER ----------
 function ConnectionGraph({ packets }) {
-  const [view, setView] = useStateG('sequence');
+  const initialView = (() => {
+    const v = new URLSearchParams(location.search).get('view');
+    return (v === 'topology' || v === 'matrix' || v === 'sequence') ? v : 'sequence';
+  })();
+  const [view, setView] = useStateG(initialView);
   const [showProtos, setShowProtos] = useStateG(new Set(['modbus','mqtt-tcp','mqtt-ws']));
   const toggleProto = (id) => setShowProtos(prev => {
     const n = new Set(prev);

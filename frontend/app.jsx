@@ -22,7 +22,9 @@ const fmtBytes = (b) => {
 };
 const hex = (n, w = 2) => n.toString(16).toUpperCase().padStart(w, '0');
 
-const DEMO = new URLSearchParams(location.search).has('demo');
+const QS = new URLSearchParams(location.search);
+const DEMO = QS.has('demo');
+const INITIAL_TAB = QS.get('tab') === 'graph' ? 'graph' : 'stream';
 const MAX_PACKETS = 600;  // ring-buffer cap in the UI
 
 // ---------- top bar ----------
@@ -531,7 +533,7 @@ function App() {
   const [selectedId, setSelectedId] = useState(null);
   const [filter, setFilter] = useState('');
   const [autoscroll, setAutoscroll] = useState(true);
-  const [activeTab, setActiveTab] = useState('stream');
+  const [activeTab, setActiveTab] = useState(INITIAL_TAB);
 
   const [duration, setDuration] = useState(0);
   const [series, setSeries] = useState(() => Array.from({length: 60}, () => ({ bytes: 0, msgs: 0 })));
