@@ -11,6 +11,33 @@
 
 const { useState: useStateG, useMemo: useMemoG, useRef: useRefG, useEffect: useEffectG } = React;
 
+// --- user-editable host labels (localStorage) ---
+// Overrides are keyed by IP: { "10.0.14.12": { label, role, detail } }.
+// Any subset of those fields may be set. Unset fields fall back to the preset
+// or auto-discovered values.
+const HOST_LABELS_KEY = 'iot-sniffer.hostLabels.v1';
+function loadHostLabels() {
+  try {
+    const v = JSON.parse(localStorage.getItem(HOST_LABELS_KEY) || '{}');
+    return (v && typeof v === 'object') ? v : {};
+  } catch { return {}; }
+}
+function saveHostLabels(obj) {
+  try { localStorage.setItem(HOST_LABELS_KEY, JSON.stringify(obj)); } catch {}
+}
+
+// Role options drive both the edit UI and the topology lane assignment.
+const ROLE_OPTIONS = [
+  { id: 'plc',     label: 'PLC',     group: 'plcs' },
+  { id: 'hmi',     label: 'HMI',     group: 'control' },
+  { id: 'scada',   label: 'SCADA',   group: 'control' },
+  { id: 'broker',  label: 'Broker',  group: 'brokers' },
+  { id: 'gateway', label: 'Gateway', group: 'brokers' },
+  { id: 'edge',    label: 'Edge',    group: 'edge' },
+  { id: 'sensor',  label: 'Sensor',  group: 'sensors' },
+];
+const groupForRole = (role) => ROLE_OPTIONS.find(r => r.id === role)?.group || 'edge';
+
 const PRESET_DEVICES = [
   { ip: '10.0.2.10',  label: 'SCADA',      role: 'scada',   group: 'control', detail: 'Ignition' },
   { ip: '10.0.8.4',   label: 'HMI-01',     role: 'hmi',     group: 'control', detail: 'WinCC' },
@@ -65,8 +92,9 @@ function labelFromIp(ip) {
 }
 
 // Build a fresh device map from a packet list: start with presets, then
-// synthesise records for any IP we see that wasn't preset.
-function buildDeviceMap(packets) {
+// synthesise records for any IP we see that wasn't preset, then apply
+// user overrides (from localStorage) last so they always win.
+function buildDeviceMap(packets, overrides = {}) {
   const map = new Map();
   PRESET_DEVICES.forEach(d => map.set(d.ip, d));
   const portsByIp = new Map();
@@ -82,6 +110,22 @@ function buildDeviceMap(packets) {
     if (map.has(ip)) return;
     const guess = inferRole([...ports].find(pt => pt === 502 || pt === 1883 || pt === 8083) || 0);
     map.set(ip, { ip, label: labelFromIp(ip), ...guess });
+  });
+  // Overrides may target IPs we haven't seen in traffic yet — still honour them
+  // so a user can pre-label a device before it shows up.
+  const allIps = new Set([...map.keys(), ...Object.keys(overrides || {})]);
+  allIps.forEach(ip => {
+    const base = map.get(ip) || { ip, label: labelFromIp(ip), role: 'edge', group: 'edge', detail: '' };
+    const ov = (overrides || {})[ip];
+    if (!ov) { map.set(ip, base); return; }
+    const role = ov.role || base.role;
+    map.set(ip, {
+      ...base,
+      label: ov.label || base.label,
+      role,
+      group: groupForRole(role),
+      detail: ov.detail != null ? ov.detail : base.detail,
+    });
   });
   return map;
 }
@@ -652,6 +696,155 @@ function CircularGraph({ ips, pairMat, devMap, hoverNode, setHoverNode, hoverCel
   );
 }
 
+// ---------- HOSTS MODAL ----------
+// Editable table of every device we know about. Edits flow up via onChange,
+// which persists to localStorage and triggers a devMap rebuild.
+function HostsModal({ onClose, devMap, packets, overrides, onChange }) {
+  const [showInactive, setShowInactive] = useStateG(false);
+  const [filter, setFilter] = useStateG('');
+
+  // Packet count per IP, for the right-hand activity column.
+  const counts = useMemoG(() => {
+    const c = new Map();
+    for (const p of packets) {
+      const s = ipOf(p.src); const d = ipOf(p.dst);
+      c.set(s, (c.get(s) || 0) + 1);
+      c.set(d, (c.get(d) || 0) + 1);
+    }
+    return c;
+  }, [packets]);
+
+  const allDevices = useMemoG(() => devicesFromMap(devMap), [devMap]);
+  const listed = useMemoG(() => {
+    const q = filter.trim().toLowerCase();
+    return allDevices.filter(d => {
+      const n = counts.get(d.ip) || 0;
+      if (!showInactive && n === 0) return false;
+      if (!q) return true;
+      return d.ip.includes(q) || (d.label || '').toLowerCase().includes(q) ||
+             (d.detail || '').toLowerCase().includes(q) || (d.role || '').includes(q);
+    });
+  }, [allDevices, counts, showInactive, filter]);
+
+  const updateField = (ip, field, value) => {
+    const next = { ...(overrides || {}) };
+    const cur = { ...(next[ip] || {}) };
+    if (value === '' || value == null) delete cur[field];
+    else cur[field] = value;
+    if (Object.keys(cur).length === 0) delete next[ip];
+    else next[ip] = cur;
+    onChange(next);
+  };
+
+  const resetRow = (ip) => {
+    if (!overrides || !overrides[ip]) return;
+    const next = { ...overrides }; delete next[ip];
+    onChange(next);
+  };
+
+  const clearAll = () => {
+    if (!Object.keys(overrides || {}).length) return;
+    if (confirm('Remove all host label overrides? (presets will remain)')) onChange({});
+  };
+
+  const overrideCount = Object.keys(overrides || {}).length;
+
+  return (
+    <div className="hosts-backdrop" onClick={onClose}>
+      <div className="hosts-modal" onClick={e => e.stopPropagation()} role="dialog" aria-label="Host labels">
+        <div className="hosts-head">
+          <div>
+            <h3>Host labels</h3>
+            <div className="hosts-sub">click a field to edit · stored in this browser</div>
+          </div>
+          <button className="hosts-close" onClick={onClose} title="Close">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6">
+              <path d="M2 2l8 8M10 2l-8 8" strokeLinecap="round"/>
+            </svg>
+          </button>
+        </div>
+
+        <div className="hosts-controls">
+          <input className="hosts-filter" placeholder="filter by ip, label, role…"
+                 value={filter} onChange={e => setFilter(e.target.value)}/>
+          <label className="hosts-toggle">
+            <input type="checkbox" checked={showInactive}
+                   onChange={e => setShowInactive(e.target.checked)}/>
+            show inactive
+          </label>
+          <span className="hosts-spacer"></span>
+          <span className="hosts-count">{overrideCount} custom</span>
+          <button className="hosts-clear" onClick={clearAll} disabled={overrideCount === 0}>
+            clear all
+          </button>
+        </div>
+
+        <div className="hosts-body">
+          <table className="hosts-table">
+            <thead>
+              <tr>
+                <th className="col-ip">IP</th>
+                <th className="col-label">Label</th>
+                <th className="col-role">Role</th>
+                <th className="col-detail">Detail</th>
+                <th className="col-pkts">Packets</th>
+                <th className="col-reset"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {listed.map(d => {
+                const ov = (overrides || {})[d.ip];
+                const n = counts.get(d.ip) || 0;
+                const hasOverride = !!(ov && Object.keys(ov).length);
+                return (
+                  <tr key={d.ip} className={n > 0 ? 'active' : 'inactive'}>
+                    <td className="col-ip mono">{d.ip}</td>
+                    <td>
+                      <input type="text" className="hosts-input"
+                             value={d.label}
+                             onChange={e => updateField(d.ip, 'label', e.target.value)}/>
+                    </td>
+                    <td>
+                      <select className="hosts-select"
+                              value={ROLE_OPTIONS.find(r => r.id === d.role) ? d.role : 'edge'}
+                              onChange={e => updateField(d.ip, 'role', e.target.value)}>
+                        {ROLE_OPTIONS.map(r => (
+                          <option key={r.id} value={r.id}>{r.label}</option>
+                        ))}
+                      </select>
+                    </td>
+                    <td>
+                      <input type="text" className="hosts-input"
+                             value={d.detail || ''}
+                             placeholder="note (optional)"
+                             onChange={e => updateField(d.ip, 'detail', e.target.value)}/>
+                    </td>
+                    <td className="col-pkts mono">{n.toLocaleString()}</td>
+                    <td className="col-reset">
+                      {hasOverride
+                        ? <button className="hosts-row-reset" onClick={() => resetRow(d.ip)} title="Reset to default">↺</button>
+                        : <span className="hosts-row-dash">—</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {listed.length === 0 && (
+            <div className="hosts-empty">
+              {filter
+                ? <>no hosts match <b>{filter}</b></>
+                : showInactive
+                  ? <>no hosts known yet</>
+                  : <>no active hosts — toggle "show inactive" to see presets</>}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------- WRAPPER ----------
 function ConnectionGraph({ packets }) {
   const initialView = (() => {
@@ -660,11 +853,17 @@ function ConnectionGraph({ packets }) {
   })();
   const [view, setView] = useStateG(initialView);
   const [showProtos, setShowProtos] = useStateG(new Set(['modbus','mqtt-tcp','mqtt-ws']));
+  const [overrides, setOverrides] = useStateG(() => loadHostLabels());
+  const [showHostsModal, setShowHostsModal] = useStateG(false);
   const toggleProto = (id) => setShowProtos(prev => {
     const n = new Set(prev);
     if (n.has(id)) n.delete(id); else n.add(id);
     return n;
   });
+  const updateOverrides = (next) => {
+    setOverrides(next);
+    saveHostLabels(next);
+  };
   // Recompute device map whenever packet set changes — lets live-mode IPs
   // auto-populate. For performance on big buffers, only rebuild when the
   // set of unique src/dst endpoints changes.
@@ -673,7 +872,7 @@ function ConnectionGraph({ packets }) {
     for (const p of packets) { s.add(p.src); s.add(p.dst); }
     return Array.from(s).sort().join('|');
   }, [packets]);
-  const devMap = useMemoG(() => buildDeviceMap(packets), [endpointKey]);
+  const devMap = useMemoG(() => buildDeviceMap(packets, overrides), [endpointKey, overrides]);
 
   return (
     <div className="graph-wrap">
@@ -690,19 +889,33 @@ function ConnectionGraph({ packets }) {
                     onClick={() => setView(b.id)}>{b.label}</button>
           ))}
         </div>
-        <div className="seq-ctrl-group">
-          {['modbus','mqtt-tcp','mqtt-ws'].map(p => (
-            <button key={p}
-                    className={"seq-chip " + p + (showProtos.has(p) ? ' on' : '')}
-                    onClick={() => toggleProto(p)}>
-              <span className="seq-chip-dot"></span>{PROTO_LABEL[p]}
-            </button>
-          ))}
+        <div className="graph-toolbar-right">
+          <div className="seq-ctrl-group">
+            {['modbus','mqtt-tcp','mqtt-ws'].map(p => (
+              <button key={p}
+                      className={"seq-chip " + p + (showProtos.has(p) ? ' on' : '')}
+                      onClick={() => toggleProto(p)}>
+                <span className="seq-chip-dot"></span>{PROTO_LABEL[p]}
+              </button>
+            ))}
+          </div>
+          <button className="hosts-btn" onClick={() => setShowHostsModal(true)} title="Edit host labels">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6">
+              <path d="M2 13L10.5 4.5a1.8 1.8 0 012.5 2.5L4.5 15.5H2V13z" strokeLinejoin="round"/>
+              <path d="M9 6l2.5 2.5" strokeLinecap="round"/>
+            </svg>
+            Hosts
+          </button>
         </div>
       </div>
       {view === 'sequence' && <SequenceView packets={packets} showProtos={showProtos} devMap={devMap}/>}
       {view === 'topology' && <TopologyView packets={packets} showProtos={showProtos} devMap={devMap}/>}
       {view === 'matrix'   && <MatrixView   packets={packets} showProtos={showProtos} devMap={devMap}/>}
+      {showHostsModal && (
+        <HostsModal onClose={() => setShowHostsModal(false)}
+                    devMap={devMap} packets={packets}
+                    overrides={overrides} onChange={updateOverrides}/>
+      )}
     </div>
   );
 }
