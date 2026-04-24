@@ -1,0 +1,111 @@
+// WebSocket bridge: connects to the Python backend's push server on :8765
+// and exposes `window.Live` as { subscribe, disconnect, state }.
+//
+// Backend messages:
+//   { type: "frame",   data: <Frame dict> }
+//   { type: "metrics", data: <metrics snapshot> }
+//
+// `Frame` is normalised to the packet shape the existing React tree expects
+// (see `sim.jsx` for the ground-truth field list).
+
+(function () {
+  const DEFAULT_URL = `ws://${location.hostname || 'localhost'}:8765`;
+
+  const PROTO_LABEL = {
+    'modbus': 'Modbus/TCP',
+    'mqtt-tcp': 'MQTT/TCP',
+    'mqtt-ws': 'MQTT/WS',
+  };
+
+  function frameToPacket(f) {
+    // Backend timestamps are float seconds; the UI uses ms.
+    const ts = (f.timestamp || 0) * 1000;
+    const latency = typeof f.latency_ms === 'number' ? f.latency_ms : 0;
+    const meta = {};
+    if (f.topic) meta['Topic'] = f.topic;
+    if (f.qos != null) meta['QoS'] = f.qos;
+    if (f.correlation_id != null) {
+      meta[f.protocol === 'modbus' ? 'TxID' : 'PktID'] =
+        f.protocol === 'modbus' ? `0x${(f.correlation_id).toString(16).toUpperCase().padStart(4,'0')}` : f.correlation_id;
+    }
+    meta['Length'] = f.raw_bytes ? f.raw_bytes.length : (f.payload_len || 0);
+
+    return {
+      id: `${ts}-${f.correlation_id ?? Math.random()}-${f.src_port}`,
+      ts,
+      proto: f.protocol,
+      protoLabel: PROTO_LABEL[f.protocol] || f.protocol,
+      src: `${f.src_ip}:${f.src_port}`,
+      dst: `${f.dst_ip}:${f.dst_port}`,
+      type: f.pkt_type,
+      summary: f.summary || '',
+      latency,
+      isError: !!f.is_error,
+      bytes: f.raw_bytes || [],
+      fieldMap: f.field_map || [],
+      meta,
+    };
+  }
+
+  class LiveConnection {
+    constructor(url) {
+      this.url = url || DEFAULT_URL;
+      this.ws = null;
+      this.state = 'connecting';
+      this.listeners = { frame: new Set(), metrics: new Set(), state: new Set() };
+      this._retry = null;
+      this._connect();
+    }
+
+    _connect() {
+      try {
+        this.ws = new WebSocket(this.url);
+      } catch (e) {
+        this._scheduleRetry();
+        return;
+      }
+      this._setState('connecting');
+      this.ws.onopen = () => this._setState('ok');
+      this.ws.onclose = () => {
+        this._setState('closed');
+        this._scheduleRetry();
+      };
+      this.ws.onerror = () => this._setState('err');
+      this.ws.onmessage = (ev) => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        if (msg.type === 'frame') {
+          const pkt = frameToPacket(msg.data);
+          this.listeners.frame.forEach(fn => { try { fn(pkt); } catch {} });
+        } else if (msg.type === 'metrics') {
+          this.listeners.metrics.forEach(fn => { try { fn(msg.data); } catch {} });
+        }
+      };
+    }
+
+    _scheduleRetry() {
+      if (this._retry) return;
+      this._retry = setTimeout(() => {
+        this._retry = null;
+        this._connect();
+      }, 1500);
+    }
+
+    _setState(s) {
+      this.state = s;
+      this.listeners.state.forEach(fn => { try { fn(s); } catch {} });
+    }
+
+    on(kind, fn) {
+      this.listeners[kind].add(fn);
+      return () => this.listeners[kind].delete(fn);
+    }
+
+    disconnect() {
+      if (this.ws) try { this.ws.close(); } catch {}
+      if (this._retry) { clearTimeout(this._retry); this._retry = null; }
+    }
+  }
+
+  window.Live = { LiveConnection, DEFAULT_URL, frameToPacket };
+})();
