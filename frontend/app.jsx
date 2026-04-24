@@ -16,7 +16,7 @@ const fmtDuration = (secs) => {
   return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
 };
 const fmtBytes = (b) => {
-  if (b < 1024) return `${b} B`;
+  if (b < 1024) return `${Math.round(b)} B`;
   if (b < 1024*1024) return `${(b/1024).toFixed(1)} KB`;
   return `${(b/1024/1024).toFixed(2)} MB`;
 };
@@ -531,6 +531,7 @@ function App() {
   const [selectedId, setSelectedId] = useState(null);
   const [filter, setFilter] = useState('');
   const [autoscroll, setAutoscroll] = useState(true);
+  const [activeTab, setActiveTab] = useState('stream');
 
   const [duration, setDuration] = useState(0);
   const [series, setSeries] = useState(() => Array.from({length: 60}, () => ({ bytes: 0, msgs: 0 })));
@@ -687,18 +688,50 @@ function App() {
           connStatus={connStatus}
         />
         <div className="center">
-          <PacketList
-            packets={packets}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            filter={filter} setFilter={setFilter}
-            autoscroll={autoscroll} setAutoscroll={setAutoscroll}
-          />
-          {selected && (
-            <DecodeDrawer
-              packet={selected}
-              onClose={() => setSelectedId(null)}
-            />
+          <div className="tabs">
+            <div
+              className={"tab" + (activeTab === 'stream' ? ' active' : '')}
+              onClick={() => setActiveTab('stream')}
+            >
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor">
+                <path d="M2 4h12M2 8h12M2 12h12" strokeLinecap="round"/>
+              </svg>
+              Packet stream
+              <span className="badge">{packets.length.toLocaleString()}</span>
+            </div>
+            <div
+              className={"tab" + (activeTab === 'graph' ? ' active' : '')}
+              onClick={() => setActiveTab('graph')}
+            >
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor">
+                <circle cx="3" cy="8" r="1.6"/>
+                <circle cx="13" cy="4" r="1.6"/>
+                <circle cx="13" cy="12" r="1.6"/>
+                <path d="M4.3 7.3l7.4-2.8M4.3 8.7l7.4 2.8" strokeLinecap="round"/>
+              </svg>
+              Connection graph
+            </div>
+            <div className="tab-spacer"></div>
+          </div>
+
+          {activeTab === 'stream' ? (
+            <>
+              <PacketList
+                packets={packets}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                filter={filter} setFilter={setFilter}
+                autoscroll={autoscroll} setAutoscroll={setAutoscroll}
+              />
+              {selected && (
+                <DecodeDrawer
+                  packet={selected}
+                  onClose={() => setSelectedId(null)}
+                />
+              )}
+            </>
+          ) : (
+            (() => { const G = window.ConnectionGraph; return <G packets={packets}/>; })()
           )}
         </div>
         <RightPanel
