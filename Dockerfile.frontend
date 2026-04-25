@@ -1,0 +1,8 @@
+# Frontend image: a tiny nginx that serves the static HTML+JSX bundle.
+# Babel-standalone compiles the JSX in the browser, so there's no build step.
+FROM nginx:1.27-alpine
+
+COPY frontend/ /usr/share/nginx/html/
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 8080

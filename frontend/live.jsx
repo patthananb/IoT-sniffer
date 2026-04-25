@@ -4,6 +4,12 @@
 // Backend messages:
 //   { type: "frame",   data: <Frame dict> }
 //   { type: "metrics", data: <metrics snapshot> }
+//   { type: "perf",    data: <perf snapshot> }
+//   { type: "query_reply", request_id, kind, data | error }
+//
+// Outbound (UI → server):
+//   { type: "query", request_id, query: "csv_samples" | "csv_per_flow"
+//                                      | "csv_history" | "history", ... }
 //
 // `Frame` is normalised to the packet shape the existing React tree expects
 // (see `sim.jsx` for the ground-truth field list).
@@ -52,8 +58,12 @@
       this.url = url || DEFAULT_URL;
       this.ws = null;
       this.state = 'connecting';
-      this.listeners = { frame: new Set(), metrics: new Set(), state: new Set() };
+      this.listeners = {
+        frame: new Set(), metrics: new Set(), perf: new Set(), state: new Set(),
+      };
       this._retry = null;
+      this._pending = new Map();  // request_id -> {resolve, reject, timer}
+      this._reqSeq = 1;
       this._connect();
     }
 
@@ -79,6 +89,15 @@
           this.listeners.frame.forEach(fn => { try { fn(pkt); } catch {} });
         } else if (msg.type === 'metrics') {
           this.listeners.metrics.forEach(fn => { try { fn(msg.data); } catch {} });
+        } else if (msg.type === 'perf') {
+          this.listeners.perf.forEach(fn => { try { fn(msg.data); } catch {} });
+        } else if (msg.type === 'query_reply') {
+          const p = this._pending.get(msg.request_id);
+          if (!p) return;
+          this._pending.delete(msg.request_id);
+          clearTimeout(p.timer);
+          if (msg.error) p.reject(new Error(msg.error));
+          else p.resolve(msg);
         }
       };
     }
@@ -101,9 +120,33 @@
       return () => this.listeners[kind].delete(fn);
     }
 
+    query(kind, params = {}, timeoutMs = 8000) {
+      return new Promise((resolve, reject) => {
+        if (!this.ws || this.ws.readyState !== 1) {
+          reject(new Error('socket not connected'));
+          return;
+        }
+        const id = this._reqSeq++;
+        const timer = setTimeout(() => {
+          this._pending.delete(id);
+          reject(new Error('query timed out'));
+        }, timeoutMs);
+        this._pending.set(id, { resolve, reject, timer });
+        try {
+          this.ws.send(JSON.stringify({ type: 'query', request_id: id, query: kind, ...params }));
+        } catch (e) {
+          this._pending.delete(id);
+          clearTimeout(timer);
+          reject(e);
+        }
+      });
+    }
+
     disconnect() {
       if (this.ws) try { this.ws.close(); } catch {}
       if (this._retry) { clearTimeout(this._retry); this._retry = null; }
+      for (const p of this._pending.values()) clearTimeout(p.timer);
+      this._pending.clear();
     }
   }
 

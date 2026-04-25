@@ -42,6 +42,12 @@ the two:
 
 ![Matrix view](docs/screenshots/graph-matrix.png)
 
+**Performance** — detailed per-protocol and per-flow analysis for
+scientific use: latency time-series (p50/p95/p99 buckets), latency
+CDF, inter-arrival jitter, frame-size distribution, sortable per-flow
+table with mean/p95/p99/max latency, and one-click CSV exports of
+samples / per-flow stats / metrics history (deep-link `?tab=perf`).
+
 ```
 ┌──────────────── sniffer package ────────────────┐        ┌──────── frontend ────────┐
 │                                                 │        │                          │
@@ -113,16 +119,47 @@ python3 -m http.server 8080
 Then open <http://localhost:8080/>.
 
 - Live mode (default) connects to `ws://localhost:8765`. A banner in the
-  bottom-right shows the connection state and auto-reconnects.
+  bottom-right shows the connection state and auto-reconnects; once
+  connected it collapses to a small status dot after 3 s so it does not
+  obstruct the dashboard. Click the dot to expand it again.
 - Demo mode: append `?demo=1` to the URL to use the built-in synthesizer
   — useful when you want to see the UI without running capture.
 - Deep links: `?tab=graph` opens the Connection graph tab directly;
-  `?view=sequence|topology|matrix` picks one of the three graph modes.
-  Params compose, e.g. `?demo=1&tab=graph&view=topology`.
+  `?tab=perf` opens the Performance tab; `?view=sequence|topology|matrix`
+  picks one of the three graph modes. Params compose, e.g.
+  `?demo=1&tab=perf` or `?demo=1&tab=graph&view=topology`.
+
+## Run with Docker
+
+A self-contained two-service stack is provided so you can run the sniffer
+without a local Python install:
+
+```bash
+SNIFFER_IFACE=eth0 docker compose up -d --build
+# then visit http://localhost:8080/
+```
+
+- `sniffer` — Python backend in `python:3.11-slim`. Uses `network_mode: host`
+  + `NET_ADMIN`/`NET_RAW` capabilities so scapy can capture from the host's
+  interfaces. SQLite database persists in the named volume `sniffer-data`.
+- `dashboard` — nginx serving the static React bundle on port `8080`.
+  No build step — the JSX is compiled in the browser by `babel-standalone`.
+
+Override defaults with environment variables when invoking compose:
+
+| Env var               | Default                                               | Notes |
+| --------------------- | ----------------------------------------------------- | ----- |
+| `SNIFFER_IFACE`       | `eth0`                                                | capture interface |
+| `SNIFFER_WS_PORT`     | `8765`                                                | WebSocket push port |
+| `SNIFFER_DB`          | `/data/sniffer.db`                                    | SQLite path inside the container |
+| `SNIFFER_EXTRA_ARGS`  | `--modbus-port 502 --mqtt-port 1883 --mqttws-port 8083` | passed through to `sniffer.server` |
+
+Demo mode (no backend, dashboard only): `docker compose up -d dashboard`
+then open <http://localhost:8080/?demo=1>.
 
 ## WebSocket push format
 
-The server pushes two message types to every connected client:
+The server pushes these message types to every connected client:
 
 ```jsonc
 // one per decoded application-layer frame
@@ -164,7 +201,45 @@ The server pushes two message types to every connected client:
     "duration_s": 222
   }
 }
+
+// one every ~5 s — drives the Performance tab
+{
+  "type": "perf",
+  "data": {
+    "per_proto": {
+      "modbus": {
+        "latency_ms": { "n": 312, "n_total": 1820, "min": 1.4, "max": 88.0,
+                         "mean": 6.2, "stddev": 4.1,
+                         "p50": 5.1, "p90": 11.0, "p95": 14.3, "p99": 27.4 },
+        "iat_ms":     { /* same shape */ },
+        "size_bytes": { /* same shape */ },
+        "cdf": [[1.4, 0.01], [2.1, 0.05], ...]   // up to 80 points
+      },
+      "mqtt-tcp": { ... }, "mqtt-ws": { ... }
+    },
+    "per_flow": [
+      { "flow": ["10.0.4.21", 55678, "10.0.4.20", 1883],
+        "protocol": "mqtt-tcp",
+        "latency_ms": { /* summary */ },
+        "bytes": 38421, "packets": 612, "last_ts": 1761234567.40 }
+    ],
+    "ts_series": {                                       // 5-s buckets
+      "modbus":   [{ "ts": 1761234560, "n": 14, "mean": 5.7,
+                     "p50": 5.1, "p95": 12.0, "p99": 21.0 }, ...],
+      "mqtt-tcp": [...]
+    },
+    "window_s": 300                                       // sample retention
+  }
+}
 ```
+
+Clients can also send `query` messages over the same socket to request
+CSV exports or historical metrics; the server replies with
+`{ "type": "query_reply", "kind": ..., "data": ..., "request_id": ... }`.
+Recognised kinds: `csv_samples` (one row per latency sample currently in
+the rolling window), `csv_per_flow` (per-flow summary stats), `csv_history`
+(full metrics-table dump from SQLite), `history` (last N metrics rows as
+JSON, parameter `limit`).
 
 On connect, the server backfills the last ~200 frames from the in-memory
 ring buffer so a freshly opened tab isn't blank.
