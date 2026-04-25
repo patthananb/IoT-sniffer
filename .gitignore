@@ -16,7 +16,13 @@ sniffer.db
 sniffer.db-journal
 sniffer.db-wal
 sniffer.db-shm
+sniffer_*.db
+sniffer_*.db-wal
+sniffer_*.db-shm
 *.pcap
+
+# Local dev / repro scripts
+reproduce_issue.py
 
 # OS / editor
 .DS_Store
