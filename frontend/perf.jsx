@@ -78,7 +78,7 @@
   }
 
   // ---- Generic line chart used by both time-series and CDF ----
-  function LineChart({ width = 720, height = 220, padL = 44, padR = 14, padT = 12, padB = 28,
+  function LineChart({ width = 720, height = 220, padL = 44, padR = 14, padT = 8, padB = 28,
                       series, xLabel, yLabel, xDomain, yDomain, yLog = false,
                       xTickFmt, yTickFmt, title }) {
     const W = width, H = height;
@@ -111,8 +111,9 @@
     const xTickVals = Array.from({ length: xTicks + 1 }, (_, i) => xMin + (xMax - xMin) * (i / xTicks));
 
     return (
+      <>
+        {title && <div className="perf-chart-title">{title}</div>}
       <svg className="perf-chart" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
-        {title && <text x={padL} y={padT - 2} className="perf-chart-title">{title}</text>}
         {yTickVals.map((v, i) => (
           <g key={'y' + i}>
             <line x1={padL} x2={padL + plotW} y1={yScale(v)} y2={yScale(v)}
@@ -153,6 +154,7 @@
           );
         })}
       </svg>
+      </>
     );
   }
 
