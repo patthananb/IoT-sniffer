@@ -32,6 +32,7 @@ from .metrics.latency import LatencyTracker
 from .metrics.throughput import ThroughputRegistry
 from .metrics.derived import DerivedMetrics
 from .metrics.aggregator import PercentileAggregator
+from .metrics.perf import PerfTracker
 
 
 Publish = Callable[[Frame], None]
@@ -66,6 +67,7 @@ class CaptureEngine:
     throughput: ThroughputRegistry = field(default_factory=lambda: ThroughputRegistry(window_s=1.0))
     derived: DerivedMetrics = field(default_factory=DerivedMetrics)
     aggregator: PercentileAggregator = field(default_factory=PercentileAggregator)
+    perf: PerfTracker = field(default_factory=PerfTracker)
 
     flows: dict[FlowTuple, FlowState] = field(default_factory=dict)
     _sniffer: AsyncSniffer | None = None
@@ -199,6 +201,7 @@ class CaptureEngine:
 
         self.derived.modbus_seen(m.is_exception, ts)
         self.throughput.record(flow, m.total_len, topic=None, ts=ts)
+        self.perf.record("modbus", flow, ts, m.total_len, latency_ms)
 
         summary = self._modbus_summary(m)
         f = Frame(
@@ -244,8 +247,8 @@ class CaptureEngine:
             self.aggregator.add(latency_ms)
 
         self.throughput.record(flow, m.total_len, topic=m.topic, ts=ts)
-
         proto_name = "mqtt-ws" if transport == "ws" else "mqtt-tcp"
+        self.perf.record(proto_name, flow, ts, m.total_len, latency_ms)
         summary = self._mqtt_summary(m)
         f = Frame(
             transport=transport,
@@ -336,3 +339,13 @@ class CaptureEngine:
             "retransmits": self.derived.retransmits,
             "duration_s": self.duration_s,
         }
+
+    def perf_snapshot(self) -> dict:
+        """Detailed per-protocol / per-flow snapshot for the Performance tab.
+
+        Heavier than `metrics_snapshot` (CDF + per-flow rows + bucketed
+        time-series), so it's pushed on a slower cadence than the 1 Hz tick.
+        """
+        with self._lock:
+            self.perf.expire_flows()
+            return self.perf.snapshot()

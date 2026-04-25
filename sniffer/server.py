@@ -1,11 +1,22 @@
 """WebSocket push server + CLI entry point.
 
-Runs the capture engine on scapy's thread, a metrics tick every 1 s, and
-broadcasts two message types to all connected frontend clients on port
-8765:
+Runs the capture engine on scapy's thread, a metrics tick every 1 s, a
+performance snapshot every 5 s, and broadcasts these message types to all
+connected frontend clients on port 8765:
 
     { "type": "frame",   "data": <frame dict> }
-    { "type": "metrics", "data": <metrics snapshot> }
+    { "type": "metrics", "data": <metrics snapshot> }       # 1 Hz
+    { "type": "perf",    "data": <perf snapshot> }          # 0.2 Hz
+    { "type": "query_reply", "request_id": <id>, "kind": ..., "data": ... }
+
+Clients can send `{"type": "query", "request_id": <id>, "query": <kind>}`
+to request CSV exports or historical metrics; the server replies on the
+same socket. Recognised query kinds:
+
+    - "csv_samples"  : per-sample latency CSV (rolling window)
+    - "csv_per_flow" : per-flow summary CSV
+    - "csv_history"  : full metrics-table history CSV (from SQLite)
+    - "history"      : last N metrics rows as JSON (param: limit, default 600)
 
 Usage:
     python -m sniffer.server --iface eth0 --modbus-port 502 \\
@@ -79,6 +90,21 @@ class PushServer:
             except asyncio.TimeoutError:
                 pass
 
+    async def _perf_ticker(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+            if self._stop.is_set():
+                return
+            try:
+                snap = self.engine.perf_snapshot()
+                msg = json.dumps({"type": "perf", "data": snap}, default=_json_default)
+                await self._broadcast(msg)
+            except Exception as e:
+                log.exception("perf tick failed: %s", e)
+
     async def _handler(self, ws) -> None:
         self.clients.add(ws)
         try:
@@ -86,12 +112,47 @@ class PushServer:
             for f in self.store.recent(200):
                 await ws.send(json.dumps({"type": "frame", "data": f.to_dict()}, default=_json_default))
             await ws.send(json.dumps({"type": "metrics", "data": self.engine.metrics_snapshot()}, default=_json_default))
-            async for _ in ws:
-                pass  # we don't accept commands yet
+            await ws.send(json.dumps({"type": "perf", "data": self.engine.perf_snapshot()}, default=_json_default))
+            async for raw in ws:
+                await self._handle_client_message(ws, raw)
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
             self.clients.discard(ws)
+
+    async def _handle_client_message(self, ws, raw: str | bytes) -> None:
+        try:
+            msg = json.loads(raw)
+        except (TypeError, ValueError):
+            return
+        if not isinstance(msg, dict) or msg.get("type") != "query":
+            return
+        kind = msg.get("query")
+        rid = msg.get("request_id")
+        try:
+            if kind == "csv_samples":
+                payload = {"kind": "csv_samples", "filename": "latency_samples.csv",
+                           "data": self.engine.perf.export_samples_csv()}
+            elif kind == "csv_per_flow":
+                payload = {"kind": "csv_per_flow", "filename": "per_flow_stats.csv",
+                           "data": self.engine.perf.export_per_flow_csv()}
+            elif kind == "csv_history":
+                payload = {"kind": "csv_history", "filename": "metrics_history.csv",
+                           "data": self.store.export_metrics_csv()}
+            elif kind == "history":
+                limit = int(msg.get("limit", 600))
+                payload = {"kind": "history",
+                           "data": self.store.metrics_history(limit=limit)}
+            else:
+                payload = {"kind": kind, "error": "unknown query"}
+        except Exception as e:
+            log.exception("query %r failed", kind)
+            payload = {"kind": kind, "error": str(e)}
+        payload["request_id"] = rid
+        try:
+            await ws.send(json.dumps({"type": "query_reply", **payload}, default=_json_default))
+        except websockets.exceptions.ConnectionClosed:
+            pass
 
     async def serve(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -101,10 +162,12 @@ class PushServer:
         log.info("WebSocket push server listening on ws://%s:%s", self.host, self.port)
         async with websockets.serve(self._handler, self.host, self.port):
             ticker = asyncio.create_task(self._metrics_ticker())
+            perf_ticker = asyncio.create_task(self._perf_ticker())
             try:
                 await self._stop.wait()
             finally:
                 ticker.cancel()
+                perf_ticker.cancel()
                 self.engine.stop()
                 self.store.stop()
 

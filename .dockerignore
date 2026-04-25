@@ -1,0 +1,28 @@
+.git
+.gitignore
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.swp
+*.swo
+
+# capture artifacts
+sniffer.db
+sniffer.db-wal
+sniffer.db-shm
+sniffer_*.db
+sniffer_*.db-wal
+sniffer_*.db-shm
+*.pcap
+reproduce_issue.py
+
+# docs / screenshots not needed in image
+docs/
+
+# editor / OS
+.vscode
+.idea
+.DS_Store

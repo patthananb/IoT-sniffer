@@ -24,7 +24,8 @@ const hex = (n, w = 2) => n.toString(16).toUpperCase().padStart(w, '0');
 
 const QS = new URLSearchParams(location.search);
 const DEMO = QS.has('demo');
-const INITIAL_TAB = QS.get('tab') === 'graph' ? 'graph' : 'stream';
+const _qsTab = QS.get('tab');
+const INITIAL_TAB = _qsTab === 'graph' ? 'graph' : _qsTab === 'perf' ? 'perf' : 'stream';
 const MAX_PACKETS = 600;  // ring-buffer cap in the UI
 
 // ---------- top bar ----------
@@ -553,15 +554,51 @@ function TopTalkers({ data }) {
 }
 
 // ---------- connection banner ----------
+//
+// Stays expanded while connecting / disconnected so the user always sees
+// problems. Once the state has been "ok" (or demo) for 3 s it collapses
+// to a small unobtrusive dot in the corner so it stops covering content
+// below it. Click the dot to expand again, click the banner to collapse
+// it sooner.
 function ConnBanner({ state }) {
-  if (DEMO) {
-    return <div className="conn-banner">demo mode · simulated traffic</div>;
-  }
-  const cls = state === 'ok' ? 'ok' : state === 'err' || state === 'closed' ? 'err' : '';
-  const text = state === 'ok' ? '● connected to sniffer'
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    if (state === 'ok' || DEMO) {
+      setCollapsed(false);
+      const t = setTimeout(() => setCollapsed(true), 3000);
+      return () => clearTimeout(t);
+    }
+    setCollapsed(false);
+  }, [state]);
+
+  const cls = DEMO ? 'demo' : state === 'ok' ? 'ok'
+           : state === 'err' || state === 'closed' ? 'err' : '';
+  const text = DEMO ? 'demo mode · simulated traffic'
+             : state === 'ok' ? '● connected to sniffer'
              : state === 'connecting' ? '○ connecting to ws://localhost:8765 …'
              : '✕ sniffer disconnected · retrying';
-  return <div className={"conn-banner " + cls}>{text}</div>;
+
+  if (collapsed) {
+    return (
+      <button
+        className={"conn-pill " + cls}
+        onClick={() => setCollapsed(false)}
+        title={text}
+      >
+        <span className="conn-pill-dot"></span>
+      </button>
+    );
+  }
+  return (
+    <div
+      className={"conn-banner " + cls}
+      onClick={() => setCollapsed(true)}
+      title="click to minimise"
+    >
+      {text}
+    </div>
+  );
 }
 
 // ---------- app ----------
@@ -584,6 +621,8 @@ function App() {
   const [modbusExceptions, setModbusExceptions] = useState(0);
   const [errorHist, setErrorHist] = useState(() => Array.from({length: 24}, () => 0));
   const [connState, setConnState] = useState(DEMO ? 'ok' : 'connecting');
+  const [perfData, setPerfData] = useState(null);
+  const liveConnRef = useRef(null);
 
   const toggleProto = (id) => setEnabledProtos(prev => {
     const next = new Set(prev);
@@ -606,6 +645,7 @@ function App() {
   useEffect(() => {
     if (DEMO) return;
     const conn = new window.Live.LiveConnection();
+    liveConnRef.current = conn;
     const offS = conn.on('state', setConnState);
     const offF = conn.on('frame', (pkt) => {
       if (!capturingRef.current) return;
@@ -620,7 +660,8 @@ function App() {
       setModbusExceptions(m.modbus_exceptions || 0);
       setErrorHist(prev => [...prev.slice(1), m.error_rate || 0]);
     });
-    return () => { offS(); offF(); offM(); conn.disconnect(); };
+    const offP = conn.on('perf', (p) => setPerfData(p));
+    return () => { offS(); offF(); offM(); offP(); conn.disconnect(); liveConnRef.current = null; };
   }, []);
 
   // --- demo mode fallback (?demo=1) ---
@@ -755,6 +796,17 @@ function App() {
               </svg>
               Connection graph
             </div>
+            <div
+              className={"tab" + (activeTab === 'perf' ? ' active' : '')}
+              onClick={() => setActiveTab('perf')}
+              title="Detailed latency / throughput / per-flow analysis for scientific use"
+            >
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor">
+                <path d="M2 13L6 8L9 11L14 4" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M2 13h12" strokeLinecap="round"/>
+              </svg>
+              Performance
+            </div>
             <div className="tab-spacer"></div>
           </div>
 
@@ -774,8 +826,14 @@ function App() {
                 />
               )}
             </>
-          ) : (
+          ) : activeTab === 'graph' ? (
             (() => { const G = window.ConnectionGraph; return <G packets={packets}/>; })()
+          ) : (
+            (() => {
+              const P = window.PerformanceTab;
+              return <P perf={perfData} packets={packets} conn={liveConnRef.current}
+                        demo={DEMO} metricsSeries={series}/>;
+            })()
           )}
         </div>
         <RightPanel

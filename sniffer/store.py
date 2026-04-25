@@ -151,3 +151,47 @@ class Store:
                 }}),
             ),
         )
+
+    # --- read API for the Performance tab ---
+    _METRIC_COLS = (
+        "ts", "throughput_bps", "throughput_mps",
+        "p50_ms", "p95_ms", "p99_ms",
+        "error_rate", "reconnect_count", "jitter_ms",
+    )
+
+    def metrics_history(self, limit: int = 600) -> list[dict[str, Any]]:
+        """Return the most recent `limit` metrics rows, oldest-first."""
+        cols = ",".join(self._METRIC_COLS)
+        conn = sqlite3.connect(self.db_path, isolation_level=None)
+        try:
+            cur = conn.execute(
+                f"SELECT {cols} FROM metrics ORDER BY ts DESC LIMIT ?",
+                (max(1, int(limit)),),
+            )
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+        out = [dict(zip(self._METRIC_COLS, r)) for r in rows]
+        out.reverse()
+        return out
+
+    def export_metrics_csv(self) -> str:
+        """Full metrics-table dump as CSV (oldest-first)."""
+        cols = self._METRIC_COLS
+        lines = [",".join(cols)]
+        conn = sqlite3.connect(self.db_path, isolation_level=None)
+        try:
+            cur = conn.execute(f"SELECT {','.join(cols)} FROM metrics ORDER BY ts ASC")
+            for row in cur:
+                lines.append(",".join(_csv_value(v) for v in row))
+        finally:
+            conn.close()
+        return "\n".join(lines) + "\n"
+
+
+def _csv_value(v: Any) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, float):
+        return f"{v:.6f}"
+    return str(v)

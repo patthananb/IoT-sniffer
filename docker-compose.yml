@@ -1,0 +1,56 @@
+# IoT Sniffer · containerised stack.
+#
+# Two services:
+#   sniffer   — Python backend, captures + decodes + WebSocket push (8765)
+#   dashboard — nginx serving the static React dashboard         (8080)
+#
+# Live capture requires the backend to share the host's network
+# namespace, so `sniffer` uses `network_mode: host` + raw-socket
+# capabilities. The dashboard runs in its own bridge network
+# because nginx doesn't need raw sockets.
+#
+# Run:
+#   docker compose up -d
+#
+# Then visit http://localhost:8080/  and the page will auto-connect
+# to ws://<host>:8765.
+#
+# To target a specific interface, override SNIFFER_IFACE:
+#   SNIFFER_IFACE=eth1 docker compose up -d
+#
+# Demo mode without the backend (useful for UI work):
+#   docker compose up -d dashboard
+#   open http://localhost:8080/?demo=1
+
+services:
+  sniffer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: iot-sniffer-backend:latest
+    container_name: iot-sniffer
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      SNIFFER_IFACE: ${SNIFFER_IFACE:-eth0}
+      SNIFFER_WS_PORT: "8765"
+      SNIFFER_DB: /data/sniffer.db
+      SNIFFER_EXTRA_ARGS: "--modbus-port 502 --mqtt-port 1883 --mqttws-port 8083"
+    volumes:
+      - sniffer-data:/data
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: iot-sniffer-dashboard:latest
+    container_name: iot-sniffer-dashboard
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+
+volumes:
+  sniffer-data:
