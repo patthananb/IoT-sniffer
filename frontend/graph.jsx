@@ -75,6 +75,11 @@ const PROTO_LABEL = {
   'mqtt-tcp': 'MQTT/TCP',
   'mqtt-ws': 'MQTT/WS',
 };
+const PROTO_OFFSET = {
+  modbus: -16,
+  'mqtt-tcp': 0,
+  'mqtt-ws': 16,
+};
 
 const ipOf = (ep) => (ep || '').split(':')[0];
 const portOf = (ep) => parseInt((ep || '').split(':')[1] || '0', 10);
@@ -159,6 +164,16 @@ function buildStats(packets, showProtos, devMap) {
     const d = nodeStats.get(dIp); d.recv++; d.bytes += (p.bytes?.length || 0); d.protos.add(p.proto); if (p.isError) d.errors++;
   }
   return { edges: Array.from(edges.values()), pairMat, nodeStats };
+}
+
+function topologyPath(s, d, proto, laneOffset = 0) {
+  const dir = d.x >= s.x ? 1 : -1;
+  const dx = Math.abs(d.x - s.x);
+  const offset = (PROTO_OFFSET[proto] || 0) + laneOffset;
+  const bend = Math.max(42, Math.min(120, dx * 0.28));
+  const y1 = s.y + offset;
+  const y2 = d.y + offset;
+  return `M${s.x} ${s.y} C${s.x + dir * bend} ${y1} ${d.x - dir * bend} ${y2} ${d.x} ${d.y}`;
 }
 
 // ---------- SEQUENCE ----------
@@ -268,8 +283,7 @@ function SequenceView({ packets, showProtos, devMap }) {
           {activeDevices.map((d) => {
             const i = colOfIp.get(d.ip);
             const x = colX(i);
-            return <line key={d.ip} x1={x} x2={x} y1={0} y2={svgH - HEADER_H}
-                    stroke="oklch(0.32 0.014 240)" strokeWidth="1" strokeDasharray="3 4"/>;
+            return <line key={d.ip} className="seq-lifeline" x1={x} x2={x} y1={0} y2={svgH - HEADER_H}/>;
           })}
           {messages.map((m, i) => {
             const sIdx = colOfIp.get(m.src); const dIdx = colOfIp.get(m.dst);
@@ -328,8 +342,8 @@ function SequenceView({ packets, showProtos, devMap }) {
           {activeDevices.map((d) => {
             const i = colOfIp.get(d.ip);
             const x = colX(i); const y = svgH - HEADER_H - BOTTOM_PAD + 10;
-            return <path key={`end-${d.ip}`} d={`M${x-4} ${y} L${x} ${y+8} L${x+4} ${y}`}
-                    fill="none" stroke="oklch(0.40 0.014 240)" strokeWidth="1.2" strokeLinejoin="round"/>;
+            return <path key={`end-${d.ip}`} className="seq-end-cap" d={`M${x-4} ${y} L${x} ${y+8} L${x+4} ${y}`}
+                    fill="none" strokeWidth="1.2" strokeLinejoin="round"/>;
           })}
         </svg>
       </div>
@@ -380,22 +394,102 @@ function TopologyView({ packets, showProtos, devMap }) {
   const positions = useMemoG(() => {
     const W = size.w, H = size.h, PAD_T = 56, PAD_B = 40;
     const map = new Map();
-    for (const g of GROUPS) {
-      const members = devices.filter(d => d.group === g.id);
+    const presetIndex = new Map(devices.map((d, i) => [d.ip, i]));
+    const activeScore = (ip) => {
+      const s = nodeStats.get(ip);
+      return s ? s.sent + s.recv : 0;
+    };
+    const placeMembers = (g, members) => {
       const cx = g.x * W;
       members.forEach((d, i) => {
         const cy = PAD_T + ((H - PAD_T - PAD_B) * (i + 0.5)) / members.length;
         map.set(d.ip, { x: cx, y: cy });
       });
+    };
+
+    for (const g of GROUPS) {
+      placeMembers(g, devices.filter(d => d.group === g.id));
+    }
+
+    for (let pass = 0; pass < 3; pass++) {
+      for (const g of GROUPS) {
+        const members = devices.filter(d => d.group === g.id);
+        const ranked = [...members].sort((a, b) => {
+          const aActive = activeScore(a.ip) > 0;
+          const bActive = activeScore(b.ip) > 0;
+          if (aActive !== bActive) return aActive ? -1 : 1;
+          const score = (ip) => {
+            let sum = 0, weight = 0;
+            for (const e of edges) {
+              if (e.src !== ip && e.dst !== ip) continue;
+              const other = e.src === ip ? e.dst : e.src;
+              const p = map.get(other);
+              if (!p) continue;
+              sum += p.y * Math.max(1, e.count);
+              weight += Math.max(1, e.count);
+            }
+            return weight ? sum / weight : (map.get(ip)?.y || 0);
+          };
+          return score(a.ip) - score(b.ip) || (presetIndex.get(a.ip) || 0) - (presetIndex.get(b.ip) || 0);
+        });
+        placeMembers(g, ranked);
+      }
     }
     return map;
-  }, [size.w, size.h, devices]);
+  }, [size.w, size.h, devices, edges, nodeStats]);
+  const routeSlots = useMemoG(() => {
+    const lanes = new Map();
+    edges.forEach((e, index) => {
+      const srcGroup = devMap.get(e.src)?.group || 'unknown';
+      const dstGroup = devMap.get(e.dst)?.group || 'unknown';
+      const key = `${srcGroup}>${dstGroup}`;
+      if (!lanes.has(key)) lanes.set(key, []);
+      const s = positions.get(e.src);
+      const d = positions.get(e.dst);
+      lanes.get(key).push({
+        index,
+        midY: s && d ? (s.y + d.y) / 2 : 0,
+        protoRank: Object.keys(PROTO_OFFSET).indexOf(e.proto),
+      });
+    });
+    const slots = new Map();
+    lanes.forEach(list => {
+      list.sort((a, b) => a.midY - b.midY || a.protoRank - b.protoRank || a.index - b.index);
+      const center = (list.length - 1) / 2;
+      list.forEach((item, i) => {
+        const slot = Math.max(-44, Math.min(44, (i - center) * 7));
+        slots.set(item.index, slot);
+      });
+    });
+    return slots;
+  }, [edges, positions, devMap]);
+  const groupMeta = useMemoG(() => {
+    const meta = new Map(GROUPS.map(g => [g.id, { total: 0, active: 0, packets: 0, errors: 0 }]));
+    devices.forEach(d => {
+      const m = meta.get(d.group);
+      if (!m) return;
+      const s = nodeStats.get(d.ip);
+      m.total++;
+      if (s && s.sent + s.recv > 0) m.active++;
+    });
+    edges.forEach(e => {
+      const groups = new Set([devMap.get(e.src)?.group, devMap.get(e.dst)?.group].filter(Boolean));
+      groups.forEach(group => {
+        const m = meta.get(group);
+        if (!m) return;
+        m.packets += e.count;
+        m.errors += e.errors;
+      });
+    });
+    return meta;
+  }, [devices, nodeStats, edges, devMap]);
   const roleShape = (role) => {
     if (role === 'plc' || role === 'broker' || role === 'gateway') return 'rect';
     if (role === 'sensor') return 'circle';
     return 'diamond';
   };
   const hoveredEndpoints = hoverEdge ? new Set([hoverEdge.src, hoverEdge.dst]) : null;
+  const laneW = Math.max(86, Math.min(150, size.w * 0.13));
   return (
     <div className="topo-inner" ref={wrapRef}>
       <svg className="graph-svg" viewBox={`0 0 ${size.w} ${size.h}`} preserveAspectRatio="none">
@@ -407,8 +501,26 @@ function TopologyView({ packets, showProtos, devMap }) {
             </marker>
           ))}
         </defs>
+        {GROUPS.map(g => {
+          const x = g.x * size.w;
+          return (
+            <g key={`lane-${g.id}`}>
+              <rect className="topo-lane-band" x={x - laneW / 2} y="43"
+                    width={laneW} height={Math.max(0, size.h - 84)} rx="0"/>
+              <line className="topo-lane-axis" x1={x} x2={x} y1="47" y2={Math.max(47, size.h - 45)}/>
+            </g>
+          );
+        })}
         {GROUPS.map(g => (
-          <text key={g.id} x={g.x * size.w} y="28" textAnchor="middle" className="graph-group-label">{g.title}</text>
+          <g key={g.id}>
+            <text x={g.x * size.w} y="24" textAnchor="middle" className="graph-group-label">{g.title}</text>
+            <text x={g.x * size.w} y="39" textAnchor="middle" className="graph-group-sub">
+              {(() => {
+                const m = groupMeta.get(g.id) || { active: 0, total: 0, packets: 0, errors: 0 };
+                return `${m.active}/${m.total} active · ${m.packets} pkt${m.errors ? ` · ${m.errors} err` : ''}`;
+              })()}
+            </text>
+          </g>
         ))}
         {edges.map((e, i) => {
           const s = positions.get(e.src); const d = positions.get(e.dst);
@@ -416,12 +528,14 @@ function TopologyView({ packets, showProtos, devMap }) {
           const sw = 0.8 + (e.count / maxEdge) * 4.4;
           const dim = (hoverNode && e.src !== hoverNode && e.dst !== hoverNode) || (hoverEdge && hoverEdge !== e);
           const active = (hoverNode && (e.src === hoverNode || e.dst === hoverNode)) || (hoverEdge === e);
-          const idx = e.proto === 'modbus' ? -1 : e.proto === 'mqtt-tcp' ? 0 : 1;
-          const mx = (s.x + d.x) / 2; const my = (s.y + d.y) / 2 + idx * 18;
-          const path = `M${s.x} ${s.y} Q${mx} ${my} ${d.x} ${d.y}`;
+          const laneOffset = routeSlots.get(i) || 0;
+          const mx = (s.x + d.x) / 2; const my = (s.y + d.y) / 2 + (PROTO_OFFSET[e.proto] || 0) + laneOffset;
+          const path = topologyPath(s, d, e.proto, laneOffset);
           return (
             <g key={i}>
-              <path d={path} stroke={PROTO_COLOR[e.proto]} strokeWidth={sw} fill="none"
+              <path className="topo-edge-shadow" d={path} strokeWidth={sw + 3} fill="none"
+                    opacity={dim ? 0 : active ? 0.22 : 0.12}/>
+              <path className={`topo-edge proto-${e.proto}`} d={path} stroke={PROTO_COLOR[e.proto]} strokeWidth={sw} fill="none"
                     opacity={dim ? 0.12 : active ? 0.95 : 0.55}
                     style={{transition: 'opacity 0.15s'}} markerEnd={`url(#topo-arr-${e.proto})`}/>
               {e.errors > 0 && <circle cx={mx} cy={my} r="3" fill="var(--err)" opacity={dim ? 0.3 : 1}/>}
@@ -443,7 +557,7 @@ function TopologyView({ packets, showProtos, devMap }) {
           return (
             <g key={d.ip} transform={`translate(${pos.x}, ${pos.y})`}
                onMouseEnter={() => setHoverNode(d.ip)} onMouseLeave={() => setHoverNode(null)}
-               style={{cursor:'pointer', opacity: dim ? 0.35 : 1, transition:'opacity 0.15s'}}>
+               style={{cursor:'pointer', opacity: dim ? 0.18 : active ? 1 : 0.38, transition:'opacity 0.15s'}}>
               {active && <circle r={isHov ? 24 : 18} fill={primary} opacity={isHov ? 0.18 : 0.08}/>}
               {shape === 'rect' && <rect x="-11" y="-11" width="22" height="22" rx="3"
                     fill="var(--bg-panel)" stroke={primary} strokeWidth={isHov ? 2 : 1.6}/>}
@@ -555,7 +669,7 @@ function MatrixView({ packets, showProtos, devMap }) {
                       const cell = pairMat.get(`${rIp}|${cIp}`);
                       const diag = rIp === cIp;
                       const count = cell?.count || 0;
-                      const bg = diag ? 'oklch(0.23 0.014 240)' : cellColor(cell);
+                      const bg = diag ? 'var(--bg-panel)' : cellColor(cell);
                       const isHov = hoverCell?.src === rIp && hoverCell?.dst === cIp;
                       return (
                         <td key={cIp}
@@ -681,7 +795,7 @@ function CircularGraph({ ips, pairMat, devMap, hoverNode, setHoverNode, hoverCel
                onMouseEnter={() => setHoverNode(ip)} onMouseLeave={() => setHoverNode(null)}
                style={{cursor:'pointer', opacity: dim ? 0.3 : 1, transition:'opacity 0.15s'}}>
               <circle cx={p.x} cy={p.y} r={isHov ? 10 : 7}
-                      fill="oklch(0.74 0.12 195 / 0.22)"
+                      fill="var(--modbus-bg)"
                       stroke={isHov ? 'var(--text)' : 'var(--modbus)'}
                       strokeWidth="1.5"/>
               <text x={lx} y={ly + 3} textAnchor={anchor}

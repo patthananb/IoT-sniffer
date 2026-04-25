@@ -29,7 +29,7 @@ const INITIAL_TAB = _qsTab === 'graph' ? 'graph' : _qsTab === 'perf' ? 'perf' : 
 const MAX_PACKETS = 600;  // ring-buffer cap in the UI
 
 // ---------- top bar ----------
-function TopBar({ capturing, onClear, duration, totalBytes, totalPackets }) {
+function TopBar({ capturing, onClear, duration, totalBytes, totalPackets, theme, onToggleTheme }) {
   return (
     <div className="topbar">
       <div className="brand">
@@ -60,6 +60,15 @@ function TopBar({ capturing, onClear, duration, totalBytes, totalPackets }) {
       </div>
 
       <div className="topbar-actions">
+        <button
+          className={"btn theme-toggle " + theme}
+          onClick={onToggleTheme}
+          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+        >
+          <span className="theme-toggle-mark"></span>
+          {theme === 'dark' ? 'Light' : 'Dark'}
+        </button>
         <button className="btn" onClick={onClear} title="Clear buffer">
           <svg className="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor">
             <path d="M3 5h10M6 5V3.5a.5.5 0 01.5-.5h3a.5.5 0 01.5.5V5M5 5v8a1 1 0 001 1h4a1 1 0 001-1V5" strokeLinecap="round"/>
@@ -601,8 +610,404 @@ function ConnBanner({ state }) {
   );
 }
 
+// ---------- option C inspector shell ----------
+function topicForPacket(packet) {
+  if (!packet) return 'factory/line1/plc1/regs/ir/30001';
+  if (packet.meta?.Topic) return packet.meta.Topic;
+  if (packet.proto === 'modbus') {
+    const unit = packet.meta?.Unit || '1';
+    const id = (packet.meta?.TxID || '0000').replace(/^0x/i, '').toLowerCase();
+    return `factory/line1/plc${unit}/regs/hr/${id}`;
+  }
+  const left = (packet.summary || '').split('←')[0].trim();
+  if (left && left.includes('/')) return left;
+  return packet.type || packet.protoLabel || 'packet';
+}
+
+const RAIL_PROTOCOLS = [
+  { id: 'modbus', label: 'Modbus', short: 'MODBUS' },
+  { id: 'mqtt-tcp', label: 'MQTT TCP', short: 'MQTT TCP' },
+  { id: 'mqtt-ws', label: 'MQTT WS', short: 'MQTT WS' },
+];
+
+function railProtocolLabel(proto) {
+  return RAIL_PROTOCOLS.find(p => p.id === proto)?.short || (proto || 'PROTO').toUpperCase();
+}
+
+function shortPacketTitle(packet) {
+  if (!packet) return 'waiting for packet';
+  const topic = topicForPacket(packet);
+  if (topic.includes('/')) return topic;
+  return `${packet.protoLabel || packet.proto} / ${packet.type}`;
+}
+
+function PacketRail({ packets, selectedId, onSelect, filter, setFilter, autoscroll, setAutoscroll, capturing, duration }) {
+  const scrollerRef = useRef(null);
+  const shown = useMemo(() => {
+    if (!filter) return packets;
+    const q = filter.toLowerCase();
+    return packets.filter(p =>
+      p.src.toLowerCase().includes(q) ||
+      p.dst.toLowerCase().includes(q) ||
+      p.type.toLowerCase().includes(q) ||
+      p.summary.toLowerCase().includes(q) ||
+      topicForPacket(p).toLowerCase().includes(q)
+    );
+  }, [packets, filter]);
+
+  useEffect(() => {
+    if (!autoscroll || !scrollerRef.current) return;
+    scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight;
+  }, [shown.length, autoscroll]);
+
+  const errors = packets.filter(p => p.isError).length;
+  const latest = packets[packets.length - 1];
+
+  return (
+    <aside className="packet-rail">
+      <div className="rail-brand">
+        <div>
+          <strong><span className={"rail-dot" + (capturing ? ' on' : '')}></span>pktscope</strong>
+          <span className="rail-version">v0.4</span>
+        </div>
+        <button className="rail-stop" title={capturing ? 'capture running' : 'capture idle'}>{capturing ? '■' : '□'}</button>
+      </div>
+      <div className="rail-sub">ws://localhost:8765</div>
+      <div className="rail-metrics">
+        <span><b>{packets.length.toLocaleString()}</b> pkts</span>
+        <span><b>{errors}</b> err</span>
+        <span><b>{latest ? Math.round(latest.latency || 0) : 0}</b>ms</span>
+      </div>
+      <div className="rail-protocol-key" aria-label="Protocol color legend">
+        {RAIL_PROTOCOLS.map(proto => (
+          <span key={proto.id} className={"rail-protocol-key-item " + proto.id}>
+            <span className="rail-protocol-swatch"></span>
+            <span>{proto.label}</span>
+          </span>
+        ))}
+      </div>
+      <div className="rail-filter">
+        <input
+          value={filter}
+          onChange={e => setFilter(e.target.value)}
+          placeholder="filter..."
+        />
+        <button className={autoscroll ? 'on' : ''} onClick={() => setAutoscroll(v => !v)} title="Auto-scroll">||</button>
+      </div>
+      <div className="rail-list" ref={scrollerRef}>
+        {shown.length === 0 && (
+          <div className="rail-empty">
+            <b>No packets</b>
+            <span>{capturing ? 'waiting for frames' : 'capture paused'}</span>
+          </div>
+        )}
+        {shown.map((p) => {
+          const topic = topicForPacket(p);
+          const topicParts = topic.split('/');
+          const compactTopic = topicParts.length > 3 ? topicParts.slice(-3).join('/') : topic;
+          return (
+            <button
+              key={p.id}
+              className={"rail-packet " + p.proto + (p.isError ? ' err' : '') + (p.id === selectedId ? ' selected' : '')}
+              onClick={() => onSelect(p.id)}
+            >
+              <span className="rail-packet-line">
+                <span className="rail-caret">{p.isError ? 'x' : '>'}</span>
+                <span>{fmtTime(p.ts).slice(0, 12)}</span>
+                <span className="rail-proto-label">{railProtocolLabel(p.proto)}</span>
+                <span className="rail-packet-type">{p.type}</span>
+                <em>{p.latency ? `${Math.round(p.latency)}ms` : '-'}</em>
+              </span>
+              <span className="rail-topic">{compactTopic}</span>
+              <span className="rail-summary">{p.summary}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="rail-foot">uptime {fmtDuration(duration)}</div>
+    </aside>
+  );
+}
+
+function PacketInspector({ packet }) {
+  const [showAscii, setShowAscii] = useState(true);
+  if (!packet) {
+    return (
+      <div className="inspector-empty">
+        <b>Waiting for packet data</b>
+        <span>Live frames will populate the packet inspector.</span>
+      </div>
+    );
+  }
+
+  const bytes = packet.bytes || [];
+  const fields = packet.fieldMap || [];
+  const fixed = fields.slice(0, Math.min(5, fields.length));
+  const variable = fields.slice(Math.min(5, fields.length), Math.min(10, fields.length));
+  const payloadField = fields.find(f => f.name === 'Payload' || f.name === 'Register Values');
+  const packetNo = packet.meta?.TxID || packet.meta?.PktID || String(packet.id).slice(0, 6);
+  const topic = topicForPacket(packet);
+  const qos = packet.meta?.QoS ?? (packet.type === 'PUBLISH' ? 1 : 0);
+  const word = bytes.length >= 2 ? ((bytes[bytes.length - 2] << 8) | bytes[bytes.length - 1]) : 0;
+  const signed = word > 0x7FFF ? word - 0x10000 : word;
+  const scaled = Math.round((word % 2400) + 100);
+  const bitValue = bytes.length >= 2 ? ((bytes[0] << 8) | bytes[1]) : word;
+
+  return (
+    <div className="packet-inspector">
+      <div className="packet-head">
+        <div>
+          <div className="packet-kicker">packet #{packetNo}</div>
+          <h1>{shortPacketTitle(packet)}</h1>
+          <div className="packet-meta">
+            <span>{fmtTime(packet.ts)}</span>
+            <span>{fmtBytes(bytes.length)} on wire</span>
+            <span>{packet.latency ? `${packet.latency.toFixed(1)}ms rtt` : 'latency pending'}</span>
+          </div>
+        </div>
+        <div className="packet-badges">
+          <span className="badge rx">RX</span>
+          <span className="badge">{packet.type}</span>
+          <span className="badge">QoS {qos}</span>
+        </div>
+      </div>
+
+      <div className="packet-panels two">
+        <FramePanel title="fixed header" fields={fixed} fallback={[
+          ['packet_type', `${packet.type} (${packet.protoLabel})`],
+          ['dup_flag', '0'],
+          ['qos', String(qos)],
+          ['retain', '0'],
+          ['remaining_length', `${bytes.length} bytes`],
+        ]}/>
+        <FramePanel title="variable header" fields={variable} fallback={[
+          ['topic_name', topic],
+          ['topic_length', `${topic.length} bytes`],
+          ['packet_id', String(packetNo)],
+          ['source', packet.src],
+          ['destination', packet.dst],
+        ]}/>
+      </div>
+
+      <section className="packet-section payload">
+        <div className="section-title">payload - {payloadField ? payloadField.desc : `${bytes.length} bytes`}</div>
+        <div className="payload-grid">
+          <div>
+            <div className="sub-label">hex dump</div>
+            <div className="hex-strip">
+              <span>0000</span>
+              {(bytes.slice(0, 18).length ? bytes.slice(0, 18) : [0, 0]).map((b, i) => (
+                <b key={i}>{hex(b)}</b>
+              ))}
+              {bytes.length > 18 && <em>..</em>}
+            </div>
+          </div>
+          <div>
+            <div className="sub-label">bit map - 16-bit reg</div>
+            <div className="bit-grid">
+              {Array.from({ length: 16 }, (_, i) => {
+                const bit = 15 - i;
+                const on = ((bitValue >> bit) & 1) === 1;
+                return (
+                  <span className={on ? 'on' : ''} key={bit}>
+                    <b>{on ? 1 : 0}</b>
+                    <em>{bit}</em>
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+        <div className="decode-strip">
+          <ValueBox label="u16" value={word}/>
+          <ValueBox label="i16" value={signed}/>
+          <ValueBox label="hex" value={`0x${hex(word, 4)}`}/>
+          <ValueBox label="scaled" value={`${scaled} rpm`}/>
+        </div>
+        {showAscii && payloadField && (
+          <pre className="payload-ascii">{String(payloadField.value || packet.summary)}</pre>
+        )}
+      </section>
+
+      <section className="packet-section workbench">
+        <details open>
+          <summary>publish workbench</summary>
+          <div className="workbench-grid">
+            <label>
+              <span>topic</span>
+              <input value={topic.replace('/regs/', '/cmd/')} readOnly />
+            </label>
+            <label>
+              <span>payload (hex bytes)</span>
+              <textarea readOnly value={bytes.slice(0, 12).map(b => hex(b)).join(' ') || '01 06 9C 41 01 F4'} />
+            </label>
+            <div className="template-grid">
+              <Template label="read holding" bytes="01 03 9C 40 00 01"/>
+              <Template label="read input" bytes="01 04 75 30 00 01"/>
+              <Template label="write single" bytes="01 06 9C 41 01 F4"/>
+              <Template label="write multi" bytes="01 10 9C 41 00 02 04 01 F4 03 E8"/>
+            </div>
+            <div className="workbench-actions">
+              <select defaultValue="1"><option value="0">qos 0</option><option value="1">qos 1</option><option value="2">qos 2</option></select>
+              <label className="check"><input type="checkbox" readOnly /> retain</label>
+              <label className="check"><input type="checkbox" checked readOnly /> hex mode</label>
+              <button>save preset</button>
+              <button className="publish">publish</button>
+            </div>
+          </div>
+        </details>
+      </section>
+    </div>
+  );
+}
+
+function FramePanel({ title, fields, fallback }) {
+  const rows = fields.length ? fields.map(f => [f.name.replace(/\s+/g, '_').toLowerCase(), f.value]) : fallback;
+  return (
+    <section className="packet-section">
+      <div className="section-title">{title}</div>
+      <dl className="frame-fields">
+        {rows.map(([k, v]) => (
+          <React.Fragment key={k}>
+            <dt>{k}</dt>
+            <dd>{String(v)}</dd>
+          </React.Fragment>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+function ValueBox({ label, value }) {
+  return (
+    <div className="value-box">
+      <span>{label}</span>
+      <b>{value}</b>
+    </div>
+  );
+}
+
+function Template({ label, bytes }) {
+  return (
+    <button className="template">
+      <b>{label}</b>
+      <span>{bytes}</span>
+    </button>
+  );
+}
+
+function InspectorRail({ packets, series, latency, errorHist, connStatus, ports, duration, topTalkers }) {
+  const topics = useMemo(() => buildTopicTree(packets), [packets]);
+  const last = series[series.length - 1] || { bytes: 0, msgs: 0 };
+  return (
+    <aside className="topic-rail">
+      <RailSection title="topic tree" note={`${packets.length} active`}>
+        <TopicTree nodes={topics}/>
+      </RailSection>
+      <RailSection title="signal">
+        <div className="rail-chart-label">latency - 60 samples</div>
+        <MiniSpark data={series.map(s => s.msgs)} />
+        <div className="rail-chart-label">packet loss - 30 samples</div>
+        <div className="loss-bars">
+          {errorHist.concat(errorHist).slice(-30).map((h, i) => (
+            <span key={i} className={h > 0.6 ? 'hot' : ''}></span>
+          ))}
+        </div>
+      </RailSection>
+      <RailSection title="connection">
+        <div className="conn-form">
+          <label><span>host</span><input value="nodered.local" readOnly /></label>
+          <label><span>port</span><input value={ports['mqtt-tcp']} readOnly /></label>
+          <label><span>path</span><input value="/mqtt" readOnly /></label>
+          <label><span>client</span><input value="pktscope-c4" readOnly /></label>
+          <label><span>user</span><input value="ops" readOnly /></label>
+          <label><span>pass</span><input value="••••••" readOnly /></label>
+          <div className="conn-checks">
+            <label><input type="checkbox" checked readOnly /> clean</label>
+            <label><input type="checkbox" readOnly /> tls</label>
+          </div>
+          <div className="conn-uptime">uptime: <b>{fmtDuration(duration)}</b></div>
+        </div>
+      </RailSection>
+      <RailSection title="top talkers" note={`${fmtBytes(last.bytes)}/s`}>
+        <TopTalkers data={topTalkers}/>
+      </RailSection>
+    </aside>
+  );
+}
+
+function RailSection({ title, note, children }) {
+  return (
+    <section className="rail-section">
+      <div className="rail-section-title">
+        <span>{title}</span>
+        {note && <em>{note}</em>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function buildTopicTree(packets) {
+  const root = {};
+  for (const p of packets) {
+    const parts = topicForPacket(p).split('/').filter(Boolean);
+    let cursor = root;
+    for (const part of parts.slice(0, 5)) {
+      if (!cursor[part]) cursor[part] = { _count: 0, _children: {} };
+      cursor[part]._count += 1;
+      cursor = cursor[part]._children;
+    }
+  }
+  return root;
+}
+
+function TopicTree({ nodes, level = 0 }) {
+  const entries = Object.entries(nodes).slice(0, level === 0 ? 5 : 6);
+  if (!entries.length) return <div className="topic-empty">no topics yet</div>;
+  return (
+    <ul className={"topic-tree level-" + level}>
+      {entries.map(([name, node]) => (
+        <li key={name}>
+          <div>
+            <span>{level === 0 ? '▸' : '·'} {name}</span>
+            <em>{node._count}</em>
+          </div>
+          {level < 3 && Object.keys(node._children).length > 0 && (
+            <TopicTree nodes={node._children} level={level + 1}/>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function MiniSpark({ data }) {
+  const W = 240, H = 48;
+  const max = Math.max(1, ...data);
+  const points = data.map((v, i) => {
+    const x = (i / Math.max(1, data.length - 1)) * W;
+    const y = H - (v / max) * (H - 5) - 2;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  return (
+    <svg className="mini-spark" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+      <polyline points={points} fill="none" stroke="currentColor" strokeWidth="1.4"/>
+    </svg>
+  );
+}
+
 // ---------- app ----------
 function App() {
+  const [theme, setTheme] = useState(() => {
+    const requestedTheme = QS.get('theme');
+    if (requestedTheme === 'dark' || requestedTheme === 'light') return requestedTheme;
+    try {
+      return localStorage.getItem('iot-sniffer-theme') === 'dark' ? 'dark' : 'light';
+    } catch {
+      return 'light';
+    }
+  });
   const [iface, setIface] = useState('eth0');
   const [capturing, setCapturing] = useState(true);
   const [enabledProtos, setEnabledProtos] = useState(new Set(['modbus','mqtt-tcp','mqtt-ws']));
@@ -623,6 +1028,13 @@ function App() {
   const [connState, setConnState] = useState(DEMO ? 'ok' : 'connecting');
   const [perfData, setPerfData] = useState(null);
   const liveConnRef = useRef(null);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem('iot-sniffer-theme', theme);
+    } catch {}
+  }, [theme]);
 
   const toggleProto = (id) => setEnabledProtos(prev => {
     const next = new Set(prev);
@@ -706,7 +1118,7 @@ function App() {
   appendPacketRef.current = appendPacket;
 
   // --- derived ---
-  const selected = packets.find(p => p.id === selectedId);
+  const selected = packets.find(p => p.id === selectedId) || packets[packets.length - 1] || null;
   const protoCounts = useMemo(() => {
     const c = { modbus: 0, 'mqtt-tcp': 0, 'mqtt-ws': 0 };
     packets.forEach(p => { c[p.proto] = (c[p.proto] || 0) + 1; });
@@ -752,27 +1164,29 @@ function App() {
   const onClear = () => { setPackets([]); setSelectedId(null); };
 
   return (
-    <div className="app">
+    <div className="app inspector-shell">
       <TopBar
         capturing={capturing}
         onClear={onClear}
         duration={duration}
         totalBytes={totalBytes}
         totalPackets={packets.length}
+        theme={theme}
+        onToggleTheme={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
       />
-      <div className="main">
-        <Sidebar
-          iface={iface} setIface={setIface}
+      <div className="main inspector-main">
+        <PacketRail
+          packets={packets}
+          selectedId={selected?.id}
+          onSelect={setSelectedId}
+          filter={filter}
+          setFilter={setFilter}
+          autoscroll={autoscroll}
+          setAutoscroll={setAutoscroll}
           capturing={capturing}
-          onToggle={() => setCapturing(c => !c)}
-          onClear={onClear}
-          enabledProtos={enabledProtos}
-          toggleProto={toggleProto}
-          protoCounts={protoCounts}
-          ports={ports} setPort={setPort}
-          connStatus={connStatus}
+          duration={duration}
         />
-        <div className="center">
+        <div className="center inspector-center">
           <div className="tabs">
             <div
               className={"tab" + (activeTab === 'stream' ? ' active' : '')}
@@ -781,7 +1195,7 @@ function App() {
               <svg viewBox="0 0 16 16" fill="none" stroke="currentColor">
                 <path d="M2 4h12M2 8h12M2 12h12" strokeLinecap="round"/>
               </svg>
-              Packet stream
+              Packet inspector
               <span className="badge">{packets.length.toLocaleString()}</span>
             </div>
             <div
@@ -811,21 +1225,7 @@ function App() {
           </div>
 
           {activeTab === 'stream' ? (
-            <>
-              <PacketList
-                packets={packets}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                filter={filter} setFilter={setFilter}
-                autoscroll={autoscroll} setAutoscroll={setAutoscroll}
-              />
-              {selected && (
-                <DecodeDrawer
-                  packet={selected}
-                  onClose={() => setSelectedId(null)}
-                />
-              )}
-            </>
+            <PacketInspector packet={selected}/>
           ) : activeTab === 'graph' ? (
             (() => { const G = window.ConnectionGraph; return <G packets={packets}/>; })()
           ) : (
@@ -836,13 +1236,14 @@ function App() {
             })()
           )}
         </div>
-        <RightPanel
+        <InspectorRail
+          packets={packets}
           series={series}
           latency={latency}
-          errorRate={errorRate}
           errorHist={errorHist}
-          mqttReconnects={mqttReconnects}
-          modbusExceptions={modbusExceptions}
+          connStatus={connStatus}
+          ports={ports}
+          duration={duration}
           topTalkers={topTalkers}
         />
       </div>

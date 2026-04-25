@@ -12,26 +12,27 @@ with pure-Python parsers (no external protocol libraries), computes live
 metrics (throughput, p50/p95/p99 latency, MQTT jitter, TCP retransmits,
 Modbus error rate, MQTT reconnects) and pushes both decoded frames and a
 1 Hz metrics snapshot to the browser over WebSocket. The frontend is a
-three-panel dark-theme dashboard served as static HTML.
+debug-first packet inspector with light/dark themes, protocol-colored
+traffic rails, connection graphs, and performance analysis served as
+static HTML.
 
 ## Screenshots
 
-**Packet stream** — live table with protocol-colored rows, decode drawer
-on row click, right-rail metrics (throughput, p50/p95/p99 latency,
-errors, reconnects, top talkers):
+**Packet inspector** — compact packet rail with protocol labels,
+frame-header breakdown, payload/bit decoding, publish workbench, and
+right-rail metrics:
 
-![Packet stream](docs/screenshots/packet-stream.png)
+![Packet inspector](docs/screenshots/packet-stream.png)
 
-**Connection graph · Sequence** — UML-style sequence diagram with device
-lifelines at the top, vertical time axis flowing down, and per-message
-arrows colored by protocol (dashed for MQTT/WS, red for errors):
+**Connection graph · Sequence** — timeline view with device lifelines at
+the top, vertical time flowing down, and per-message arrows colored by
+protocol:
 
 ![Sequence view](docs/screenshots/graph-sequence.png)
 
 **Connection graph · Topology** — devices grouped left-to-right by role
-(PLCs → control room → brokers → edge → sensors); edges curve per
-protocol so parallel flows between the same pair don't overlap; edge
-thickness scales with packet count:
+(PLCs → control room → brokers → edge → sensors), with deterministic
+lane routing and edge thickness scaled by packet count:
 
 ![Topology view](docs/screenshots/graph-topology.png)
 
@@ -47,6 +48,8 @@ scientific use: latency time-series (p50/p95/p99 buckets), latency
 CDF, inter-arrival jitter, frame-size distribution, sortable per-flow
 table with mean/p95/p99/max latency, and one-click CSV exports of
 samples / per-flow stats / metrics history (deep-link `?tab=perf`).
+
+![Performance view](docs/screenshots/performance.png)
 
 ```
 ┌──────────────── sniffer package ────────────────┐        ┌──────── frontend ────────┐
