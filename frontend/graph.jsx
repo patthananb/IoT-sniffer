@@ -3,18 +3,17 @@
 //   'topology' — devices by role with protocol edges
 //   'matrix'   — circular graph + adjacency matrix
 //
-// Design ships with a hard-coded DEVICES list that matches the demo-mode
-// simulator's IP range. For live captures on a real network the packet IPs
-// won't match — so `resolveDevice` auto-creates a minimal entry on first
-// sight, inferring role from the port that's in the flow (502→PLC,
-// 1883→broker, 8083→gateway, fallback→edge).
+// Demo mode can show a named device list that matches the synthesizer's IP
+// range. Live captures start from observed packet endpoints instead, inferring
+// role from the port that's in the flow (502 -> PLC, 1883 -> broker,
+// 8083 -> gateway, fallback -> edge).
 
 const { useState: useStateG, useMemo: useMemoG, useRef: useRefG, useEffect: useEffectG } = React;
 
 // --- user-editable host labels (localStorage) ---
 // Overrides are keyed by IP: { "10.0.14.12": { label, role, detail } }.
-// Any subset of those fields may be set. Unset fields fall back to the preset
-// or auto-discovered values.
+// Any subset of those fields may be set. Unset fields fall back to discovered
+// values, or demo presets when demo mode is active.
 const HOST_LABELS_KEY = 'iot-sniffer.hostLabels.v1';
 function loadHostLabels() {
   try {
@@ -96,12 +95,12 @@ function labelFromIp(ip) {
   return `host-${last}`;
 }
 
-// Build a fresh device map from a packet list: start with presets, then
-// synthesise records for any IP we see that wasn't preset, then apply
+// Build a fresh device map from a packet list: start with demo presets when
+// requested, then synthesise records for any IP we see, then apply
 // user overrides (from localStorage) last so they always win.
-function buildDeviceMap(packets, overrides = {}) {
+function buildDeviceMap(packets, overrides = {}, includePresets = false) {
   const map = new Map();
-  PRESET_DEVICES.forEach(d => map.set(d.ip, d));
+  if (includePresets) PRESET_DEVICES.forEach(d => map.set(d.ip, d));
   const portsByIp = new Map();
   for (const p of packets) {
     const sIp = ipOf(p.src), dIp = ipOf(p.dst);
@@ -135,12 +134,14 @@ function buildDeviceMap(packets, overrides = {}) {
   return map;
 }
 
-// Keep preset and discovered devices in a stable list for the views.
-function devicesFromMap(devMap) {
-  // Preserve preset order first, then append any auto-discovered in IP order.
+// Keep known and discovered devices in a stable list for the views.
+function devicesFromMap(devMap, includePresets = false) {
+  const entries = [...devMap.values()];
+  if (!includePresets) return entries.sort((a, b) => a.ip.localeCompare(b.ip));
+
+  // Preserve demo preset order first, then append any auto-discovered in IP order.
   const preset = PRESET_DEVICES.map(d => devMap.get(d.ip)).filter(Boolean);
-  const extras = [];
-  devMap.forEach((d, ip) => { if (!PRESET_DEVICES.find(x => x.ip === ip)) extras.push(d); });
+  const extras = entries.filter(d => !PRESET_DEVICES.find(x => x.ip === d.ip));
   extras.sort((a, b) => a.ip.localeCompare(b.ip));
   return [...preset, ...extras];
 }
@@ -177,7 +178,7 @@ function topologyPath(s, d, proto, laneOffset = 0) {
 }
 
 // ---------- SEQUENCE ----------
-function SequenceView({ packets, showProtos, devMap }) {
+function SequenceView({ packets, showProtos, devMap, includePresets = false }) {
   const wrapRef = useRefG(null);
   const scrollRef = useRefG(null);
   const [wrapSize, setWrapSize] = useStateG({ w: 900, h: 600 });
@@ -196,7 +197,7 @@ function SequenceView({ packets, showProtos, devMap }) {
     return () => ro.disconnect();
   }, []);
 
-  const devices = useMemoG(() => devicesFromMap(devMap), [devMap]);
+  const devices = useMemoG(() => devicesFromMap(devMap, includePresets), [devMap, includePresets]);
 
   const activeDevices = useMemoG(() => {
     const seen = new Set();
@@ -372,7 +373,7 @@ function SequenceView({ packets, showProtos, devMap }) {
 }
 
 // ---------- TOPOLOGY ----------
-function TopologyView({ packets, showProtos, devMap }) {
+function TopologyView({ packets, showProtos, devMap, includePresets = false }) {
   const wrapRef = useRefG(null);
   const [size, setSize] = useStateG({ w: 900, h: 600 });
   const [hoverNode, setHoverNode] = useStateG(null);
@@ -388,7 +389,7 @@ function TopologyView({ packets, showProtos, devMap }) {
     ro.observe(wrapRef.current);
     return () => ro.disconnect();
   }, []);
-  const devices = useMemoG(() => devicesFromMap(devMap), [devMap]);
+  const devices = useMemoG(() => devicesFromMap(devMap, includePresets), [devMap, includePresets]);
   const { edges, nodeStats } = useMemoG(() => buildStats(packets, showProtos, devMap), [packets, showProtos, devMap]);
   const maxEdge = Math.max(1, ...edges.map(e => e.count));
   const positions = useMemoG(() => {
@@ -604,10 +605,10 @@ function TopologyView({ packets, showProtos, devMap }) {
 }
 
 // ---------- MATRIX ----------
-function MatrixView({ packets, showProtos, devMap }) {
+function MatrixView({ packets, showProtos, devMap, includePresets = false }) {
   const [hoverCell, setHoverCell] = useStateG(null);
   const [hoverNode, setHoverNode] = useStateG(null);
-  const devices = useMemoG(() => devicesFromMap(devMap), [devMap]);
+  const devices = useMemoG(() => devicesFromMap(devMap, includePresets), [devMap, includePresets]);
   const { pairMat, nodeStats } = useMemoG(() => buildStats(packets, showProtos, devMap), [packets, showProtos, devMap]);
   const activeIps = useMemoG(() => {
     const seen = new Set();
@@ -813,7 +814,7 @@ function CircularGraph({ ips, pairMat, devMap, hoverNode, setHoverNode, hoverCel
 // ---------- HOSTS MODAL ----------
 // Editable table of every device we know about. Edits flow up via onChange,
 // which persists to localStorage and triggers a devMap rebuild.
-function HostsModal({ onClose, devMap, packets, overrides, onChange }) {
+function HostsModal({ onClose, devMap, packets, overrides, onChange, includePresets = false }) {
   const [showInactive, setShowInactive] = useStateG(false);
   const [filter, setFilter] = useStateG('');
 
@@ -828,7 +829,7 @@ function HostsModal({ onClose, devMap, packets, overrides, onChange }) {
     return c;
   }, [packets]);
 
-  const allDevices = useMemoG(() => devicesFromMap(devMap), [devMap]);
+  const allDevices = useMemoG(() => devicesFromMap(devMap, includePresets), [devMap, includePresets]);
   const listed = useMemoG(() => {
     const q = filter.trim().toLowerCase();
     return allDevices.filter(d => {
@@ -858,7 +859,7 @@ function HostsModal({ onClose, devMap, packets, overrides, onChange }) {
 
   const clearAll = () => {
     if (!Object.keys(overrides || {}).length) return;
-    if (confirm('Remove all host label overrides? (presets will remain)')) onChange({});
+    if (confirm('Remove all host label overrides?')) onChange({});
   };
 
   const overrideCount = Object.keys(overrides || {}).length;
@@ -950,7 +951,7 @@ function HostsModal({ onClose, devMap, packets, overrides, onChange }) {
                 ? <>no hosts match <b>{filter}</b></>
                 : showInactive
                   ? <>no hosts known yet</>
-                  : <>no active hosts — toggle "show inactive" to see presets</>}
+                  : <>no active hosts — toggle "show inactive" to see saved hosts</>}
             </div>
           )}
         </div>
@@ -960,7 +961,7 @@ function HostsModal({ onClose, devMap, packets, overrides, onChange }) {
 }
 
 // ---------- WRAPPER ----------
-function ConnectionGraph({ packets }) {
+function ConnectionGraph({ packets, demo = false }) {
   const initialView = (() => {
     const v = new URLSearchParams(location.search).get('view');
     return (v === 'topology' || v === 'matrix' || v === 'sequence') ? v : 'sequence';
@@ -969,6 +970,7 @@ function ConnectionGraph({ packets }) {
   const [showProtos, setShowProtos] = useStateG(new Set(['modbus','mqtt-tcp','mqtt-ws']));
   const [overrides, setOverrides] = useStateG(() => loadHostLabels());
   const [showHostsModal, setShowHostsModal] = useStateG(false);
+  const includePresets = !!demo;
   const toggleProto = (id) => setShowProtos(prev => {
     const n = new Set(prev);
     if (n.has(id)) n.delete(id); else n.add(id);
@@ -986,7 +988,10 @@ function ConnectionGraph({ packets }) {
     for (const p of packets) { s.add(p.src); s.add(p.dst); }
     return Array.from(s).sort().join('|');
   }, [packets]);
-  const devMap = useMemoG(() => buildDeviceMap(packets, overrides), [endpointKey, overrides]);
+  const devMap = useMemoG(
+    () => buildDeviceMap(packets, overrides, includePresets),
+    [endpointKey, overrides, includePresets]
+  );
 
   return (
     <div className="graph-wrap">
@@ -1022,13 +1027,14 @@ function ConnectionGraph({ packets }) {
           </button>
         </div>
       </div>
-      {view === 'sequence' && <SequenceView packets={packets} showProtos={showProtos} devMap={devMap}/>}
-      {view === 'topology' && <TopologyView packets={packets} showProtos={showProtos} devMap={devMap}/>}
-      {view === 'matrix'   && <MatrixView   packets={packets} showProtos={showProtos} devMap={devMap}/>}
+      {view === 'sequence' && <SequenceView packets={packets} showProtos={showProtos} devMap={devMap} includePresets={includePresets}/>}
+      {view === 'topology' && <TopologyView packets={packets} showProtos={showProtos} devMap={devMap} includePresets={includePresets}/>}
+      {view === 'matrix'   && <MatrixView   packets={packets} showProtos={showProtos} devMap={devMap} includePresets={includePresets}/>}
       {showHostsModal && (
         <HostsModal onClose={() => setShowHostsModal(false)}
                     devMap={devMap} packets={packets}
-                    overrides={overrides} onChange={updateOverrides}/>
+                    overrides={overrides} onChange={updateOverrides}
+                    includePresets={includePresets}/>
       )}
     </div>
   );

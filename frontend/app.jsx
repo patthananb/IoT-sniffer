@@ -28,6 +28,18 @@ const _qsTab = QS.get('tab');
 const INITIAL_TAB = _qsTab === 'graph' ? 'graph' : _qsTab === 'perf' ? 'perf' : 'stream';
 const MAX_PACKETS = 600;  // ring-buffer cap in the UI
 
+function snifferUrlLabel() {
+  if (DEMO) return 'demo mode';
+  const raw = window.Live?.DEFAULT_URL || 'ws://localhost:8765';
+  try {
+    const url = new URL(raw, location.href);
+    url.search = '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return raw.split('?')[0];
+  }
+}
+
 // ---------- top bar ----------
 function TopBar({ capturing, onClear, duration, totalBytes, totalPackets, theme, onToggleTheme }) {
   return (
@@ -40,9 +52,9 @@ function TopBar({ capturing, onClear, duration, totalBytes, totalPackets, theme,
 
       <div className="topbar-stats">
         <div className="stat">
-          <div className="stat-label">Capture</div>
+          <div className="stat-label">Stream</div>
           <div className={"stat-value" + (capturing ? " live" : "")}>
-            {capturing ? '● LIVE' : '○ IDLE'}
+            {capturing ? '● LIVE' : '○ PAUSED'}
           </div>
         </div>
         <div className="stat">
@@ -75,465 +87,8 @@ function TopBar({ capturing, onClear, duration, totalBytes, totalPackets, theme,
           </svg>
           Clear
         </button>
-        <button className="btn primary">
-          <svg className="btn-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor">
-            <path d="M8 2v8m0 0l-3-3m3 3l3-3M3 12v1a1 1 0 001 1h8a1 1 0 001-1v-1" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-          Export .pcap
-        </button>
       </div>
     </div>
-  );
-}
-
-// ---------- sidebar ----------
-function Sidebar({
-  iface, setIface, capturing, onToggle, onClear,
-  enabledProtos, toggleProto, protoCounts,
-  ports, setPort, connStatus,
-}) {
-  const interfaces = [
-    { id: 'eth0', name: 'eth0', ip: '10.0.4.18', mac: 'b8:27:eb:a2:10:4c' },
-    { id: 'eth1', name: 'eth1 (DMZ)', ip: '192.168.40.3', mac: 'b8:27:eb:a2:10:4d' },
-    { id: 'wlan0', name: 'wlan0', ip: '10.0.4.22', mac: 'dc:a6:32:71:8f:0a' },
-    { id: 'any', name: 'any (all interfaces)', ip: '—', mac: '—' },
-  ];
-  const current = interfaces.find(i => i.id === iface) || interfaces[0];
-
-  const protos = [
-    { id: 'modbus',   label: 'Modbus TCP', cls: 'modbus' },
-    { id: 'mqtt-tcp', label: 'MQTT / TCP', cls: 'mqtt-tcp' },
-    { id: 'mqtt-ws',  label: 'MQTT / WS',  cls: 'mqtt-ws' },
-  ];
-
-  return (
-    <aside className="sidebar">
-      <div className="sb-section">
-        <h3 className="sb-title">Interface</h3>
-        <select className="iface-select" value={iface} onChange={e => setIface(e.target.value)}>
-          {interfaces.map(i => (
-            <option key={i.id} value={i.id}>{i.name}</option>
-          ))}
-        </select>
-        <div className="iface-meta">
-          <span>{current.ip}</span>
-          <span>{current.mac}</span>
-        </div>
-      </div>
-
-      <div className="sb-section">
-        <h3 className="sb-title">Capture</h3>
-        <div className="capture-controls">
-          <button
-            className={"cap-btn start" + (capturing ? " capturing" : "")}
-            onClick={onToggle}
-          >
-            <span className="icon"></span>
-            {capturing ? 'Stop' : 'Start'}
-          </button>
-          <button className="cap-btn" onClick={onClear}>Clear</button>
-          <button className="cap-btn">Pause</button>
-        </div>
-      </div>
-
-      <div className="sb-section">
-        <h3 className="sb-title">Protocols</h3>
-        {protos.map(p => (
-          <label
-            key={p.id}
-            className={"proto-row " + p.cls + (enabledProtos.has(p.id) ? " checked" : "")}
-            onClick={e => { e.preventDefault(); toggleProto(p.id); }}
-          >
-            <input type="checkbox" readOnly checked={enabledProtos.has(p.id)} />
-            <span className="proto-box"></span>
-            <span className="proto-name">{p.label}</span>
-            <span className="proto-count">{(protoCounts[p.id] || 0).toLocaleString()}</span>
-          </label>
-        ))}
-      </div>
-
-      <div className="sb-section">
-        <h3 className="sb-title">Ports</h3>
-        <div className="port-grid">
-          <span className="port-lbl modbus">Modbus</span>
-          <input className="port-input" value={ports.modbus}
-                 onChange={e => setPort('modbus', e.target.value)} />
-        </div>
-        <div className="port-grid">
-          <span className="port-lbl mqtt-tcp">MQTT</span>
-          <input className="port-input" value={ports['mqtt-tcp']}
-                 onChange={e => setPort('mqtt-tcp', e.target.value)} />
-        </div>
-        <div className="port-grid">
-          <span className="port-lbl mqtt-ws">MQTT/WS</span>
-          <input className="port-input" value={ports['mqtt-ws']}
-                 onChange={e => setPort('mqtt-ws', e.target.value)} />
-        </div>
-      </div>
-
-      <div className="sb-section">
-        <h3 className="sb-title">Connections</h3>
-        <div className="conn-row">
-          <span className={"dot " + (connStatus.modbus === 'ok' ? 'ok' : connStatus.modbus === 'err' ? 'err' : '')}></span>
-          <span className="conn-name">Modbus bus</span>
-          <span className="conn-state">{connStatus.modbus === 'ok' ? 'SNIFFING' : connStatus.modbus === 'err' ? 'ERROR' : 'IDLE'}</span>
-        </div>
-        <div className="conn-row">
-          <span className={"dot " + (connStatus['mqtt-tcp'] === 'ok' ? 'ok' : connStatus['mqtt-tcp'] === 'err' ? 'err' : '')}></span>
-          <span className="conn-name">MQTT broker</span>
-          <span className="conn-state">{connStatus['mqtt-tcp'] === 'ok' ? 'SNIFFING' : connStatus['mqtt-tcp'] === 'err' ? 'RECONNECT' : 'IDLE'}</span>
-        </div>
-        <div className="conn-row">
-          <span className={"dot " + (connStatus['mqtt-ws'] === 'ok' ? 'ok' : connStatus['mqtt-ws'] === 'err' ? 'err' : '')}></span>
-          <span className="conn-name">WS gateway</span>
-          <span className="conn-state">{connStatus['mqtt-ws'] === 'ok' ? 'SNIFFING' : connStatus['mqtt-ws'] === 'err' ? 'ERROR' : 'IDLE'}</span>
-        </div>
-      </div>
-    </aside>
-  );
-}
-
-// ---------- packet list ----------
-function PacketList({ packets, selectedId, onSelect, filter, setFilter, autoscroll, setAutoscroll }) {
-  const scrollerRef = useRef(null);
-  const shown = useMemo(() => {
-    if (!filter) return packets;
-    const q = filter.toLowerCase();
-    return packets.filter(p =>
-      p.src.toLowerCase().includes(q) ||
-      p.dst.toLowerCase().includes(q) ||
-      p.type.toLowerCase().includes(q) ||
-      p.summary.toLowerCase().includes(q) ||
-      p.protoLabel.toLowerCase().includes(q)
-    );
-  }, [packets, filter]);
-
-  useEffect(() => {
-    if (!autoscroll || !scrollerRef.current) return;
-    scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight;
-  }, [shown.length, autoscroll]);
-
-  return (
-    <div className="table-wrap">
-      <div className="center-head">
-        <input
-          className="search"
-          placeholder="filter  e.g.  mqtt.topic == factory/line1  |  modbus.fc == 3  |  10.0.14.12"
-          value={filter}
-          onChange={e => setFilter(e.target.value)}
-        />
-        <div className="head-meta">
-          <span>{shown.length.toLocaleString()} / {packets.length.toLocaleString()}</span>
-        </div>
-        <label
-          className={"autoscroll-toggle" + (autoscroll ? " on" : "")}
-          onClick={() => setAutoscroll(!autoscroll)}
-        >
-          <span className="pill"></span>
-          auto-scroll
-        </label>
-      </div>
-
-      <div className="packet-list" ref={scrollerRef}>
-        <div className="pkt-header">
-          <div>Time</div>
-          <div>Protocol</div>
-          <div>Source</div>
-          <div>Destination</div>
-          <div>Type</div>
-          <div>Summary</div>
-          <div style={{textAlign:'right'}}>Latency</div>
-        </div>
-        {shown.length === 0 && (
-          <div className="empty">
-            <b>No packets yet.</b>
-            waiting for the sniffer to push frames over ws://localhost:8765
-          </div>
-        )}
-        {shown.map((p, i) => (
-          <div
-            key={p.id}
-            className={
-              "pkt-row " + p.proto +
-              (p.isError ? " err" : "") +
-              (p.id === selectedId ? " selected" : "") +
-              (i >= shown.length - 3 ? " new" : "")
-            }
-            onClick={() => onSelect(p.id === selectedId ? null : p.id)}
-          >
-            <div className="col-time">{fmtTime(p.ts)}</div>
-            <div className={"col-proto " + p.proto}>{p.protoLabel}</div>
-            <div>{p.src}</div>
-            <div>{p.dst}</div>
-            <div className="col-type">{p.type}</div>
-            <div className="col-summary">{p.summary}</div>
-            <div className="col-latency">{(p.latency || 0).toFixed(1)}ms</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ---------- decode drawer ----------
-const isPrint = b => b >= 0x20 && b <= 0x7E;
-
-function DecodeDrawer({ packet, onClose }) {
-  const [hover, setHover] = useState(null);
-  const [showAscii, setShowAscii] = useState(true);
-
-  if (!packet) return null;
-  const fieldMap = packet.fieldMap || [];
-  const bytes = packet.bytes || [];
-  const hoverBytes = new Set(hover !== null && fieldMap[hover] ? fieldMap[hover].bytes : []);
-
-  const rows = [];
-  const perRow = 16;
-  for (let off = 0; off < bytes.length; off += perRow) {
-    rows.push({ off, slice: bytes.slice(off, off + perRow) });
-  }
-
-  const byteGroup = new Array(bytes.length).fill(null);
-  fieldMap.forEach((f, fi) => {
-    (f.bytes || []).forEach(b => { if (byteGroup[b] == null) byteGroup[b] = { g: f.group, fi }; });
-  });
-
-  // Decode full payload bytes as UTF-8 for the ASCII panel
-  const payloadField = fieldMap.find(f => f.name === 'Payload');
-  const payloadBytes = payloadField ? (payloadField.bytes || []).map(i => bytes[i]).filter(b => b !== undefined) : [];
-  let payloadAscii = '';
-  try { payloadAscii = new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(payloadBytes)); }
-  catch { payloadAscii = payloadBytes.map(b => isPrint(b) ? String.fromCharCode(b) : '.').join(''); }
-
-  return (
-    <div className="drawer">
-      <div className="drawer-head">
-        <div className="drawer-title">
-          <span className={"tag " + packet.proto}>{packet.protoLabel}</span>
-          <span>{packet.type}</span>
-          <span style={{color:'var(--text-muted)', fontWeight:400}}>·</span>
-          <span style={{color:'var(--text-muted)', fontWeight:400}}>{packet.src} → {packet.dst}</span>
-        </div>
-        <div className="drawer-meta">
-          {Object.entries(packet.meta || {}).map(([k,v]) => (
-            <span key={k}>{k}: <b>{v}</b></span>
-          ))}
-          <span>Latency: <b>{(packet.latency || 0).toFixed(2)} ms</b></span>
-        </div>
-        <button className="drawer-close" onClick={onClose} title="Close">
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6">
-            <path d="M2 2l8 8M10 2l-8 8" strokeLinecap="round"/>
-          </svg>
-        </button>
-      </div>
-
-      <div className="drawer-body">
-        <div className="decode-col">
-          <div className="decode-col-title">
-            Hex · {bytes.length} bytes
-            <button
-              className={"ascii-toggle" + (showAscii ? " on" : "")}
-              onClick={() => setShowAscii(v => !v)}
-              title="Toggle ASCII column"
-            >ASCII</button>
-          </div>
-          <div className="hex-view">
-            {rows.map(r => (
-              <div className="hex-line" key={r.off}>
-                <span className="hex-offset">{hex(r.off, 4)}</span>
-                <span className="hex-bytes">
-                  {r.slice.map((b, i) => {
-                    const abs = r.off + i;
-                    const g = byteGroup[abs];
-                    const cls = g ? `g-${g.g}` : '';
-                    const hl = hoverBytes.has(abs) ? ' hover' : '';
-                    return (
-                      <span
-                        key={i}
-                        className={`hex-byte ${cls}${hl}`}
-                        onMouseEnter={() => g && setHover(g.fi)}
-                        onMouseLeave={() => setHover(null)}
-                      >{hex(b)}</span>
-                    );
-                  })}
-                </span>
-                {showAscii && (
-                  <span className="hex-ascii">
-                    {r.slice.map((b, i) => {
-                      const abs = r.off + i;
-                      const g = byteGroup[abs];
-                      const hl = hoverBytes.has(abs) ? ' hover' : '';
-                      const print = isPrint(b);
-                      return (
-                        <span
-                          key={i}
-                          className={`hex-ascii-char${print ? '' : ' non-print'}${hl}`}
-                          onMouseEnter={() => g && setHover(g.fi)}
-                          onMouseLeave={() => setHover(null)}
-                          title={`0x${hex(b)} = ${print ? String.fromCharCode(b) : 'non-printable'}`}
-                        >{print ? String.fromCharCode(b) : '·'}</span>
-                      );
-                    })}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-          {payloadAscii && (
-            <div className="ascii-payload">
-              <div className="ascii-payload-title">Payload · decoded</div>
-              <pre className="ascii-payload-body">{payloadAscii}</pre>
-            </div>
-          )}
-        </div>
-
-        <div className="decode-col">
-          <div className="decode-col-title">Parsed fields</div>
-          {fieldMap.map((f, i) => (
-            <div
-              key={i}
-              className={"field" + (hover === i ? " hover" : "")}
-              onMouseEnter={() => setHover(i)}
-              onMouseLeave={() => setHover(null)}
-              style={hover === i ? {background:'var(--bg-elev)'} : null}
-            >
-              <span className={`field-swatch g-${f.group}`}></span>
-              <span className="field-name">
-                <b>{f.name}</b>
-                <em>{f.desc} · bytes [{(f.bytes||[])[0]}{(f.bytes||[]).length > 1 ? `–${f.bytes[f.bytes.length-1]}` : ''}]</em>
-              </span>
-              <span className="field-val">{f.value}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ---------- throughput chart ----------
-function ThroughputChart({ series }) {
-  const W = 292, H = 132, PAD_L = 6, PAD_R = 6, PAD_T = 8, PAD_B = 14;
-  const plotW = W - PAD_L - PAD_R;
-  const plotH = H - PAD_T - PAD_B;
-
-  const maxB = Math.max(1, ...series.map(s => s.bytes));
-  const maxM = Math.max(1, ...series.map(s => s.msgs));
-
-  const bytePath = series.map((s, i) => {
-    const x = PAD_L + (i / Math.max(1, series.length - 1)) * plotW;
-    const y = PAD_T + (1 - s.bytes / maxB) * plotH;
-    return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`;
-  }).join(' ');
-  const byteFill = bytePath
-    ? bytePath + ` L${(PAD_L + plotW).toFixed(1)} ${(PAD_T + plotH).toFixed(1)} L${PAD_L.toFixed(1)} ${(PAD_T + plotH).toFixed(1)} Z`
-    : '';
-
-  const msgPath = series.map((s, i) => {
-    const x = PAD_L + (i / Math.max(1, series.length - 1)) * plotW;
-    const y = PAD_T + (1 - s.msgs / maxM) * plotH;
-    return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`;
-  }).join(' ');
-
-  const last = series[series.length - 1] || { bytes: 0, msgs: 0 };
-
-  return (
-    <>
-      <svg className="chart" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
-        <defs>
-          <linearGradient id="bgrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%"  stopColor="oklch(0.80 0.16 150)" stopOpacity="0.35"/>
-            <stop offset="100%" stopColor="oklch(0.80 0.16 150)" stopOpacity="0"/>
-          </linearGradient>
-        </defs>
-        {[0.25, 0.5, 0.75].map(f => (
-          <line key={f}
-            x1={PAD_L} x2={PAD_L + plotW}
-            y1={PAD_T + f * plotH} y2={PAD_T + f * plotH}
-            stroke="oklch(0.28 0.014 240)" strokeWidth="1" strokeDasharray="2 3"
-          />
-        ))}
-        <line x1={PAD_L} x2={PAD_L + plotW} y1={PAD_T + plotH} y2={PAD_T + plotH}
-          stroke="oklch(0.32 0.014 240)" strokeWidth="1"/>
-        <path d={byteFill} fill="url(#bgrad)"/>
-        <path d={bytePath} fill="none" stroke="oklch(0.80 0.16 150)" strokeWidth="1.6" strokeLinejoin="round"/>
-        <path d={msgPath} fill="none" stroke="oklch(0.72 0.14 270)" strokeWidth="1.4" strokeLinejoin="round"/>
-        <text x={PAD_L} y={H - 3} fontSize="9" fill="oklch(0.50 0.012 240)" fontFamily="JetBrains Mono">-60s</text>
-        <text x={PAD_L + plotW / 2 - 8} y={H - 3} fontSize="9" fill="oklch(0.50 0.012 240)" fontFamily="JetBrains Mono">-30s</text>
-        <text x={PAD_L + plotW - 14} y={H - 3} fontSize="9" fill="oklch(0.50 0.012 240)" fontFamily="JetBrains Mono">now</text>
-      </svg>
-      <div className="chart-legend">
-        <span>bytes/s <b>{fmtBytes(last.bytes)}</b></span>
-        <span className="msg">msg/s <b>{Math.round(last.msgs)}</b></span>
-      </div>
-    </>
-  );
-}
-
-// ---------- right panel ----------
-function RightPanel({ series, latency, errorRate, errorHist, mqttReconnects, modbusExceptions, topTalkers }) {
-  const maxLat = Math.max(latency.p50, latency.p95, latency.p99, 1);
-  return (
-    <aside className="right">
-      <div className="metric-section">
-        <div className="metric-title">
-          <span>Throughput</span>
-          <span className="mt-note">60s rolling · 1 Hz</span>
-        </div>
-        <ThroughputChart series={series}/>
-      </div>
-
-      <div className="metric-section">
-        <div className="metric-title">
-          <span>Latency distribution</span>
-          <span className="mt-note">last 60s</span>
-        </div>
-        {[{k:'p50',v:latency.p50},{k:'p95',v:latency.p95},{k:'p99',v:latency.p99}].map(({k, v}) => (
-          <div className="lat-row" key={k}>
-            <div className="lat-label">{k}</div>
-            <div className="lat-track">
-              <div className="lat-fill" style={{width: `${Math.min(100, (v / maxLat) * 100)}%`}}></div>
-            </div>
-            <div className="lat-val">{v.toFixed(1)}ms</div>
-          </div>
-        ))}
-      </div>
-
-      <div className="metric-section">
-        <div className="metric-title">
-          <span>Errors & reconnects</span>
-        </div>
-        <div className="counter-grid">
-          <div className="counter full err">
-            <div className="counter-lbl">Error rate · pkt/min</div>
-            <div className="counter-val">{errorRate}</div>
-            <div className="err-rate">
-              {errorHist.map((h, i) => (
-                <span key={i} style={{height: `${Math.max(4, h * 10)}%`, opacity: 0.4 + h * 0.1}}></span>
-              ))}
-            </div>
-          </div>
-          <div className="counter warn">
-            <div className="counter-lbl">MQTT reconnects</div>
-            <div className="counter-val">{mqttReconnects}</div>
-            <div className="counter-delta">since start</div>
-          </div>
-          <div className="counter err">
-            <div className="counter-lbl">Modbus exc.</div>
-            <div className="counter-val">{modbusExceptions}</div>
-            <div className="counter-delta">last 60s</div>
-          </div>
-        </div>
-      </div>
-
-      <div className="metric-section" style={{flex:1, borderBottom:0}}>
-        <div className="metric-title">
-          <span>Top talkers</span>
-          <span className="mt-note">by packets</span>
-        </div>
-        <TopTalkers data={topTalkers}/>
-      </div>
-    </aside>
   );
 }
 
@@ -585,7 +140,7 @@ function ConnBanner({ state }) {
            : state === 'err' || state === 'closed' ? 'err' : '';
   const text = DEMO ? 'demo mode · simulated traffic'
              : state === 'ok' ? '● connected to sniffer'
-             : state === 'connecting' ? '○ connecting to ws://localhost:8765 …'
+             : state === 'connecting' ? `○ connecting to ${snifferUrlLabel()} ...`
              : '✕ sniffer disconnected · retrying';
 
   if (collapsed) {
@@ -610,18 +165,13 @@ function ConnBanner({ state }) {
   );
 }
 
-// ---------- option C inspector shell ----------
 function topicForPacket(packet) {
-  if (!packet) return 'factory/line1/plc1/regs/ir/30001';
-  if (packet.meta?.Topic) return packet.meta.Topic;
-  if (packet.proto === 'modbus') {
-    const unit = packet.meta?.Unit || '1';
-    const id = (packet.meta?.TxID || '0000').replace(/^0x/i, '').toLowerCase();
-    return `factory/line1/plc${unit}/regs/hr/${id}`;
-  }
+  if (!packet) return '';
+  if (packet.meta?.Topic) return String(packet.meta.Topic);
+  if (!String(packet.proto || '').startsWith('mqtt')) return '';
   const left = (packet.summary || '').split('←')[0].trim();
   if (left && left.includes('/')) return left;
-  return packet.type || packet.protoLabel || 'packet';
+  return '';
 }
 
 const RAIL_PROTOCOLS = [
@@ -637,11 +187,11 @@ function railProtocolLabel(proto) {
 function shortPacketTitle(packet) {
   if (!packet) return 'waiting for packet';
   const topic = topicForPacket(packet);
-  if (topic.includes('/')) return topic;
-  return `${packet.protoLabel || packet.proto} / ${packet.type}`;
+  if (topic) return topic;
+  return `${packet.protoLabel || packet.proto} / ${packet.type || 'packet'}`;
 }
 
-function PacketRail({ packets, selectedId, onSelect, filter, setFilter, autoscroll, setAutoscroll, capturing, duration }) {
+function PacketRail({ packets, selectedId, onSelect, filter, setFilter, autoscroll, setAutoscroll, capturing, onToggleCapture, duration }) {
   const scrollerRef = useRef(null);
   const shown = useMemo(() => {
     if (!filter) return packets;
@@ -670,9 +220,15 @@ function PacketRail({ packets, selectedId, onSelect, filter, setFilter, autoscro
           <strong><span className={"rail-dot" + (capturing ? ' on' : '')}></span>pktscope</strong>
           <span className="rail-version">v0.4</span>
         </div>
-        <button className="rail-stop" title={capturing ? 'capture running' : 'capture idle'}>{capturing ? '■' : '□'}</button>
+        <button
+          className="rail-stop"
+          onClick={onToggleCapture}
+          title={capturing ? 'Pause stream intake' : 'Resume stream intake'}
+        >
+          {capturing ? 'pause' : 'resume'}
+        </button>
       </div>
-      <div className="rail-sub">ws://localhost:8765</div>
+      <div className="rail-sub">{snifferUrlLabel()}</div>
       <div className="rail-metrics">
         <span><b>{packets.length.toLocaleString()}</b> pkts</span>
         <span><b>{errors}</b> err</span>
@@ -704,7 +260,9 @@ function PacketRail({ packets, selectedId, onSelect, filter, setFilter, autoscro
         {shown.map((p) => {
           const topic = topicForPacket(p);
           const topicParts = topic.split('/');
-          const compactTopic = topicParts.length > 3 ? topicParts.slice(-3).join('/') : topic;
+          const compactTopic = topic
+            ? topicParts.length > 3 ? topicParts.slice(-3).join('/') : topic
+            : `${p.protoLabel || p.proto} / ${p.type || 'packet'}`;
           return (
             <button
               key={p.id}
@@ -730,7 +288,6 @@ function PacketRail({ packets, selectedId, onSelect, filter, setFilter, autoscro
 }
 
 function PacketInspector({ packet }) {
-  const [showAscii, setShowAscii] = useState(true);
   if (!packet) {
     return (
       <div className="inspector-empty">
@@ -745,13 +302,16 @@ function PacketInspector({ packet }) {
   const fixed = fields.slice(0, Math.min(5, fields.length));
   const variable = fields.slice(Math.min(5, fields.length), Math.min(10, fields.length));
   const payloadField = fields.find(f => f.name === 'Payload' || f.name === 'Register Values');
+  const registerField = fields.find(f => f.name === 'Register Values');
+  const registerBytes = registerField
+    ? (registerField.bytes || []).map(i => bytes[i]).filter(b => b !== undefined)
+    : [];
   const packetNo = packet.meta?.TxID || packet.meta?.PktID || String(packet.id).slice(0, 6);
   const topic = topicForPacket(packet);
-  const qos = packet.meta?.QoS ?? (packet.type === 'PUBLISH' ? 1 : 0);
-  const word = bytes.length >= 2 ? ((bytes[bytes.length - 2] << 8) | bytes[bytes.length - 1]) : 0;
-  const signed = word > 0x7FFF ? word - 0x10000 : word;
-  const scaled = Math.round((word % 2400) + 100);
-  const bitValue = bytes.length >= 2 ? ((bytes[0] << 8) | bytes[1]) : word;
+  const isMqtt = String(packet.proto || '').startsWith('mqtt');
+  const qos = packet.meta?.QoS;
+  const registerWord = registerBytes.length >= 2 ? ((registerBytes[0] << 8) | registerBytes[1]) : null;
+  const registerSigned = registerWord != null && registerWord > 0x7FFF ? registerWord - 0x10000 : registerWord;
 
   return (
     <div className="packet-inspector">
@@ -766,24 +326,22 @@ function PacketInspector({ packet }) {
           </div>
         </div>
         <div className="packet-badges">
-          <span className="badge rx">RX</span>
+          <span className="badge">{packet.protoLabel || packet.proto}</span>
           <span className="badge">{packet.type}</span>
-          <span className="badge">QoS {qos}</span>
+          {isMqtt && qos != null && <span className="badge">QoS {qos}</span>}
         </div>
       </div>
 
       <div className="packet-panels two">
         <FramePanel title="fixed header" fields={fixed} fallback={[
-          ['packet_type', `${packet.type} (${packet.protoLabel})`],
-          ['dup_flag', '0'],
-          ['qos', String(qos)],
-          ['retain', '0'],
-          ['remaining_length', `${bytes.length} bytes`],
+          ['packet_type', `${packet.type} (${packet.protoLabel || packet.proto})`],
+          ['source', packet.src],
+          ['destination', packet.dst],
+          ['wire_length', `${bytes.length} bytes`],
         ]}/>
         <FramePanel title="variable header" fields={variable} fallback={[
-          ['topic_name', topic],
-          ['topic_length', `${topic.length} bytes`],
-          ['packet_id', String(packetNo)],
+          ...(topic ? [['topic_name', topic], ['topic_length', `${topic.length} bytes`]] : []),
+          ['correlation_id', String(packetNo)],
           ['source', packet.src],
           ['destination', packet.dst],
         ]}/>
@@ -791,7 +349,7 @@ function PacketInspector({ packet }) {
 
       <section className="packet-section payload">
         <div className="section-title">payload - {payloadField ? payloadField.desc : `${bytes.length} bytes`}</div>
-        <div className="payload-grid">
+        <div className={"payload-grid" + (registerWord == null ? " single" : "")}>
           <div>
             <div className="sub-label">hex dump</div>
             <div className="hex-strip">
@@ -802,29 +360,32 @@ function PacketInspector({ packet }) {
               {bytes.length > 18 && <em>..</em>}
             </div>
           </div>
-          <div>
-            <div className="sub-label">bit map - 16-bit reg</div>
-            <div className="bit-grid">
-              {Array.from({ length: 16 }, (_, i) => {
-                const bit = 15 - i;
-                const on = ((bitValue >> bit) & 1) === 1;
-                return (
-                  <span className={on ? 'on' : ''} key={bit}>
-                    <b>{on ? 1 : 0}</b>
-                    <em>{bit}</em>
-                  </span>
-                );
-              })}
+          {registerWord != null && (
+            <div>
+              <div className="sub-label">first register bits</div>
+              <div className="bit-grid">
+                {Array.from({ length: 16 }, (_, i) => {
+                  const bit = 15 - i;
+                  const on = ((registerWord >> bit) & 1) === 1;
+                  return (
+                    <span className={on ? 'on' : ''} key={bit}>
+                      <b>{on ? 1 : 0}</b>
+                      <em>{bit}</em>
+                    </span>
+                  );
+                })}
+              </div>
             </div>
+          )}
+        </div>
+        {registerWord != null && (
+          <div className="decode-strip three">
+            <ValueBox label="u16" value={registerWord}/>
+            <ValueBox label="i16" value={registerSigned}/>
+            <ValueBox label="hex" value={`0x${hex(registerWord, 4)}`}/>
           </div>
-        </div>
-        <div className="decode-strip">
-          <ValueBox label="u16" value={word}/>
-          <ValueBox label="i16" value={signed}/>
-          <ValueBox label="hex" value={`0x${hex(word, 4)}`}/>
-          <ValueBox label="scaled" value={`${scaled} rpm`}/>
-        </div>
-        {showAscii && payloadField && (
+        )}
+        {payloadField && (
           <pre className="payload-ascii">{String(payloadField.value || packet.summary)}</pre>
         )}
       </section>
@@ -859,37 +420,22 @@ function ValueBox({ label, value }) {
   );
 }
 
-function InspectorRail({ packets, series, latency, errorHist, connStatus, ports, duration, topTalkers }) {
-  const topics = useMemo(() => buildTopicTree(packets), [packets]);
+function InspectorRail({ packets, series, errorHist, topTalkers }) {
+  const topicInfo = useMemo(() => buildTopicTree(packets), [packets]);
   const last = series[series.length - 1] || { bytes: 0, msgs: 0 };
   return (
     <aside className="topic-rail">
-      <RailSection title="topic tree" note={`${packets.length} active`}>
-        <TopicTree nodes={topics}/>
+      <RailSection title="mqtt topics" note={`${topicInfo.count} topics`}>
+        <TopicTree nodes={topicInfo.nodes}/>
       </RailSection>
       <RailSection title="signal">
-        <div className="rail-chart-label">latency - 60 samples</div>
+        <div className="rail-chart-label">throughput - 60 samples</div>
         <MiniSpark data={series.map(s => s.msgs)} />
         <div className="rail-chart-label">packet loss - 30 samples</div>
         <div className="loss-bars">
           {errorHist.concat(errorHist).slice(-30).map((h, i) => (
             <span key={i} className={h > 0.6 ? 'hot' : ''}></span>
           ))}
-        </div>
-      </RailSection>
-      <RailSection title="connection">
-        <div className="conn-form">
-          <label><span>host</span><input value="nodered.local" readOnly /></label>
-          <label><span>port</span><input value={ports['mqtt-tcp']} readOnly /></label>
-          <label><span>path</span><input value="/mqtt" readOnly /></label>
-          <label><span>client</span><input value="pktscope-c4" readOnly /></label>
-          <label><span>user</span><input value="ops" readOnly /></label>
-          <label><span>pass</span><input value="••••••" readOnly /></label>
-          <div className="conn-checks">
-            <label><input type="checkbox" checked readOnly /> clean</label>
-            <label><input type="checkbox" readOnly /> tls</label>
-          </div>
-          <div className="conn-uptime">uptime: <b>{fmtDuration(duration)}</b></div>
         </div>
       </RailSection>
       <RailSection title="top talkers" note={`${fmtBytes(last.bytes)}/s`}>
@@ -913,20 +459,24 @@ function RailSection({ title, note, children }) {
 
 function buildTopicTree(packets) {
   const root = {};
+  const uniqueTopics = new Set();
   for (const p of packets) {
-    const parts = topicForPacket(p).split('/').filter(Boolean);
+    const topic = topicForPacket(p);
+    if (!topic) continue;
+    uniqueTopics.add(topic);
+    const parts = topic.split('/').filter(Boolean);
     let cursor = root;
-    for (const part of parts.slice(0, 5)) {
+    for (const part of parts) {
       if (!cursor[part]) cursor[part] = { _count: 0, _children: {} };
       cursor[part]._count += 1;
       cursor = cursor[part]._children;
     }
   }
-  return root;
+  return { nodes: root, count: uniqueTopics.size };
 }
 
 function TopicTree({ nodes, level = 0 }) {
-  const entries = Object.entries(nodes).slice(0, level === 0 ? 5 : 6);
+  const entries = Object.entries(nodes).sort((a, b) => b[1]._count - a[1]._count || a[0].localeCompare(b[0]));
   if (!entries.length) return <div className="topic-empty">no topics yet</div>;
   return (
     <ul className={"topic-tree level-" + level}>
@@ -936,7 +486,7 @@ function TopicTree({ nodes, level = 0 }) {
             <span>{level === 0 ? '▸' : '·'} {name}</span>
             <em>{node._count}</em>
           </div>
-          {level < 3 && Object.keys(node._children).length > 0 && (
+          {Object.keys(node._children).length > 0 && (
             <TopicTree nodes={node._children} level={level + 1}/>
           )}
         </li>
@@ -971,10 +521,8 @@ function App() {
       return 'light';
     }
   });
-  const [iface, setIface] = useState('eth0');
   const [capturing, setCapturing] = useState(true);
-  const [enabledProtos, setEnabledProtos] = useState(new Set(['modbus','mqtt-tcp','mqtt-ws']));
-  const [ports, setPorts] = useState({ modbus: '502', 'mqtt-tcp': '1883', 'mqtt-ws': '8083' });
+  const enabledProtos = useMemo(() => new Set(['modbus','mqtt-tcp','mqtt-ws']), []);
 
   const [packets, setPackets] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -984,9 +532,6 @@ function App() {
 
   const [duration, setDuration] = useState(0);
   const [series, setSeries] = useState(() => Array.from({length: 60}, () => ({ bytes: 0, msgs: 0 })));
-  const [latencyDist, setLatencyDist] = useState({ p50: 0, p95: 0, p99: 0 });
-  const [mqttReconnects, setMqttReconnects] = useState(0);
-  const [modbusExceptions, setModbusExceptions] = useState(0);
   const [errorHist, setErrorHist] = useState(() => Array.from({length: 24}, () => 0));
   const [connState, setConnState] = useState(DEMO ? 'ok' : 'connecting');
   const [perfData, setPerfData] = useState(null);
@@ -998,13 +543,6 @@ function App() {
       localStorage.setItem('iot-sniffer-theme', theme);
     } catch {}
   }, [theme]);
-
-  const toggleProto = (id) => setEnabledProtos(prev => {
-    const next = new Set(prev);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
-  });
-  const setPort = (k, v) => setPorts(prev => ({ ...prev, [k]: v }));
 
   const appendPacket = useCallback((pkt) => {
     if (!pkt) return;
@@ -1030,9 +568,6 @@ function App() {
     const offM = conn.on('metrics', (m) => {
       setDuration(Math.round(m.duration_s || 0));
       setSeries(prev => [...prev.slice(1), { bytes: m.throughput_bps || 0, msgs: m.throughput_mps || 0 }]);
-      setLatencyDist({ p50: m.p50_ms || 0, p95: m.p95_ms || 0, p99: m.p99_ms || 0 });
-      setMqttReconnects(m.reconnect_count || 0);
-      setModbusExceptions(m.modbus_exceptions || 0);
       setErrorHist(prev => [...prev.slice(1), m.error_rate || 0]);
     });
     const offP = conn.on('perf', (p) => setPerfData(p));
@@ -1067,8 +602,6 @@ function App() {
         }];
       });
       setDuration(d => d + 1);
-      if (Math.random() < 0.08) setModbusExceptions(n => n + 1);
-      if (Math.random() < 0.02) setMqttReconnects(n => n + 1);
       setErrorHist(prev => [...prev.slice(1), Math.random() * (Math.random() < 0.15 ? 1.6 : 0.5)]);
     }, 1000);
     return () => clearInterval(int);
@@ -1082,27 +615,8 @@ function App() {
 
   // --- derived ---
   const selected = packets.find(p => p.id === selectedId) || packets[packets.length - 1] || null;
-  const protoCounts = useMemo(() => {
-    const c = { modbus: 0, 'mqtt-tcp': 0, 'mqtt-ws': 0 };
-    packets.forEach(p => { c[p.proto] = (c[p.proto] || 0) + 1; });
-    return c;
-  }, [packets]);
-
   const totalBytes = useMemo(
     () => packets.reduce((s, p) => s + (p.bytes?.length || 0), 0),
-    [packets]
-  );
-
-  // Demo mode: compute latency from UI packets. Live mode: trust backend snapshot.
-  const latency = DEMO ? useMemo(() => {
-    const lats = packets.map(p => p.latency || 0).sort((a,b) => a-b);
-    if (lats.length === 0) return { p50: 0, p95: 0, p99: 0 };
-    const pick = (pct) => lats[Math.min(lats.length - 1, Math.floor(lats.length * pct))];
-    return { p50: pick(0.5), p95: pick(0.95), p99: pick(0.99) };
-  }, [packets]) : latencyDist;
-
-  const errorRate = useMemo(
-    () => packets.filter(p => p.isError).length,
     [packets]
   );
 
@@ -1117,12 +631,6 @@ function App() {
     }
     return [...byKey.values()].sort((a, b) => b.n - a.n).slice(0, 5);
   }, [packets]);
-
-  const connStatus = {
-    modbus: !capturing ? 'idle' : enabledProtos.has('modbus') ? 'ok' : 'idle',
-    'mqtt-tcp': !capturing ? 'idle' : enabledProtos.has('mqtt-tcp') ? 'ok' : 'idle',
-    'mqtt-ws': !capturing ? 'idle' : enabledProtos.has('mqtt-ws') ? (connState === 'ok' ? 'ok' : 'err') : 'idle',
-  };
 
   const onClear = () => { setPackets([]); setSelectedId(null); };
 
@@ -1147,6 +655,7 @@ function App() {
           autoscroll={autoscroll}
           setAutoscroll={setAutoscroll}
           capturing={capturing}
+          onToggleCapture={() => setCapturing(v => !v)}
           duration={duration}
         />
         <div className="center inspector-center">
@@ -1190,7 +699,7 @@ function App() {
           {activeTab === 'stream' ? (
             <PacketInspector packet={selected}/>
           ) : activeTab === 'graph' ? (
-            (() => { const G = window.ConnectionGraph; return <G packets={packets}/>; })()
+            (() => { const G = window.ConnectionGraph; return <G packets={packets} demo={DEMO}/>; })()
           ) : (
             (() => {
               const P = window.PerformanceTab;
@@ -1202,11 +711,7 @@ function App() {
         <InspectorRail
           packets={packets}
           series={series}
-          latency={latency}
           errorHist={errorHist}
-          connStatus={connStatus}
-          ports={ports}
-          duration={duration}
           topTalkers={topTalkers}
         />
       </div>

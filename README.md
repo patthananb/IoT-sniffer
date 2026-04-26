@@ -19,8 +19,8 @@ static HTML.
 ## Screenshots
 
 **Packet inspector** — compact packet rail with protocol labels,
-frame-header breakdown, payload/bit decoding, publish workbench, and
-right-rail metrics:
+frame-header breakdown, payload/register decoding, an MQTT-only topic tree,
+throughput signal, and top talkers:
 
 ![Packet inspector](docs/screenshots/packet-stream.png)
 
@@ -153,6 +153,8 @@ Then open <http://localhost:8080/>.
   `?tab=perf` opens the Performance tab; `?view=sequence|topology|matrix`
   picks one of the three graph modes. Params compose, e.g.
   `?demo=1&tab=perf` or `?demo=1&tab=graph&view=topology`.
+- In live mode, the graph uses only observed hosts plus labels saved in the
+  browser. Demo mode adds a named fixture host list for the synthesizer.
 
 ## Run with Docker
 
@@ -216,7 +218,7 @@ The server pushes these message types to every connected client:
     "dst_ip": "10.0.4.20", "dst_port": 1883,
     "latency_ms": 4.21,                 // null until request/response matched
     "is_error": false,
-    "raw_bytes": [...],                 // full frame for hex view / pcap
+    "raw_bytes": [...],                 // full decoded application frame for hex view
     "field_map": [ {name, desc, bytes:[...], value, group}, ... ],
     "summary": "factory/line1/temp ← {...}"
   }
@@ -334,8 +336,10 @@ iot-sniffer/
 └── frontend/
     ├── index.html
     ├── styles.css
-    ├── app.jsx                  # React dashboard
+    ├── app.jsx                  # React dashboard shell and packet inspector
     ├── live.jsx                 # WebSocket bridge (default)
+    ├── graph.jsx                # sequence, topology, and matrix views
+    ├── perf.jsx                 # performance analysis and CSV exports
     └── sim.jsx                  # demo-mode synthesizer (?demo=1)
 ```
 
