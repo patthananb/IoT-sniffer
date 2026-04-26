@@ -22,26 +22,26 @@ static HTML.
 frame-header breakdown, payload/register decoding, an MQTT-only topic tree,
 throughput signal, and top talkers:
 
-![Packet inspector](docs/screenshots/packet-stream.png)
+![Packet inspector](docs/screenshots/packet-stream-2026-04-26.png)
 
 **Connection graph · Sequence** — timeline view with device lifelines at
 the top, vertical time flowing down, and per-message arrows colored by
 protocol:
 
-![Sequence view](docs/screenshots/graph-sequence.png)
+![Sequence view](docs/screenshots/graph-sequence-2026-04-26.png)
 
 **Connection graph · Topology** — devices grouped left-to-right by role
 (PLCs → control room → brokers → edge → sensors), with deterministic
 lane routing and edge thickness scaled by packet count:
 
-![Topology view](docs/screenshots/graph-topology.png)
+![Topology view](docs/screenshots/graph-topology-2026-04-26.png)
 
 **Connection graph · Matrix** — circular complete-graph on the left
 paired with an adjacency table on the right; cells shaded by packet
 count and tinted by dominant protocol, with cross-highlighting between
 the two:
 
-![Matrix view](docs/screenshots/graph-matrix.png)
+![Matrix view](docs/screenshots/graph-matrix-2026-04-26.png)
 
 **Performance** — detailed per-protocol and per-flow analysis for
 scientific use: latency time-series (p50/p95/p99 buckets), latency
@@ -49,7 +49,7 @@ CDF, inter-arrival jitter, frame-size distribution, sortable per-flow
 table with mean/p95/p99/max latency, and one-click CSV exports of
 samples / per-flow stats / metrics history (deep-link `?tab=perf`).
 
-![Performance view](docs/screenshots/performance.png)
+![Performance view](docs/screenshots/performance-2026-04-26.png)
 
 ```
 ┌──────────────── sniffer package ────────────────┐        ┌──────── frontend ────────┐
