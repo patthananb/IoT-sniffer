@@ -231,6 +231,9 @@ function synthMqtt(kind) {
   else if (type === 9) summary = `subscribe ack pid=${pktId}`;
   else summary = MQTT_TYPES[type].toLowerCase();
 
+  const meta = { 'Type': MQTT_TYPES[type], 'QoS': qos, 'Retain': retain ? 'yes' : 'no', 'Length': remLen + 2 };
+  if (type === 3 || type === 8) meta.Topic = topic;
+
   return {
     proto: kind === 'tcp' ? 'mqtt-tcp' : 'mqtt-ws',
     protoLabel: kind === 'tcp' ? 'MQTT/TCP' : 'MQTT/WS',
@@ -239,7 +242,7 @@ function synthMqtt(kind) {
     type: MQTT_TYPES[type], summary,
     latency: rand(1.5, 18), isError: false,
     bytes, fieldMap,
-    meta: { 'Type': MQTT_TYPES[type], 'QoS': qos, 'Retain': retain ? 'yes' : 'no', 'Length': remLen + 2 },
+    meta,
   };
 }
 

@@ -168,9 +168,6 @@ function ConnBanner({ state }) {
 function topicForPacket(packet) {
   if (!packet) return '';
   if (packet.meta?.Topic) return String(packet.meta.Topic);
-  if (!String(packet.proto || '').startsWith('mqtt')) return '';
-  const left = (packet.summary || '').split('←')[0].trim();
-  if (left && left.includes('/')) return left;
   return '';
 }
 
