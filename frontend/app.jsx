@@ -310,6 +310,7 @@ function PacketInspector({ packet }) {
   const topic = topicForPacket(packet);
   const isMqtt = String(packet.proto || '').startsWith('mqtt');
   const qos = packet.meta?.QoS;
+  const showQos = isMqtt && packet.type === 'PUBLISH' && qos != null;
   const registerWord = registerBytes.length >= 2 ? ((registerBytes[0] << 8) | registerBytes[1]) : null;
   const registerSigned = registerWord != null && registerWord > 0x7FFF ? registerWord - 0x10000 : registerWord;
 
@@ -328,7 +329,7 @@ function PacketInspector({ packet }) {
         <div className="packet-badges">
           <span className="badge">{packet.protoLabel || packet.proto}</span>
           <span className="badge">{packet.type}</span>
-          {isMqtt && qos != null && <span className="badge">QoS {qos}</span>}
+          {showQos && <span className="badge">QoS {qos}</span>}
         </div>
       </div>
 
