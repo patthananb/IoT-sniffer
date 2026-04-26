@@ -15,9 +15,20 @@
 // (see `sim.jsx` for the ground-truth field list).
 
 (function () {
-  // If the page URL has ?token=..., forward it to the WS as ?token=...
-  // (the backend also accepts an Authorization: Bearer header).
-  const _pageToken = new URLSearchParams(location.search).get('token');
+  // Token discovery: ?token=... in the page URL takes priority, otherwise
+  // we fall back to a value previously cached in localStorage. Whenever a
+  // URL token is supplied we mirror it into localStorage so a one-time
+  // visit with ?token=... is enough — subsequent bare URLs on the same
+  // browser pick it up automatically. The backend also accepts
+  // Authorization: Bearer for non-browser clients.
+  const _LS_KEY = 'iot-sniffer-token';
+  const _urlToken = new URLSearchParams(location.search).get('token') || '';
+  let _cached = '';
+  try { _cached = localStorage.getItem(_LS_KEY) || ''; } catch (_) {}
+  if (_urlToken && _urlToken !== _cached) {
+    try { localStorage.setItem(_LS_KEY, _urlToken); } catch (_) {}
+  }
+  const _pageToken = _urlToken || _cached;
   const _qs = _pageToken ? `?token=${encodeURIComponent(_pageToken)}` : '';
   const _scheme = location.protocol === 'https:' ? 'wss' : 'ws';
   const DEFAULT_URL = `${_scheme}://${location.hostname || 'localhost'}:8765${_qs}`;

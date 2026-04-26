@@ -24,6 +24,9 @@ sniffer_*.db-shm
 # Local dev / repro scripts
 reproduce_issue.py
 
+# Per-host secrets used by docker compose
+.env
+
 # OS / editor
 .DS_Store
 .idea/
