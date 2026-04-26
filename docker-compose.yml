@@ -36,8 +36,17 @@ services:
       - NET_RAW
     environment:
       SNIFFER_IFACE: ${SNIFFER_IFACE:-eth0}
+      SNIFFER_WS_HOST: ${SNIFFER_WS_HOST:-0.0.0.0}
       SNIFFER_WS_PORT: "8765"
       SNIFFER_DB: /data/sniffer.db
+      # Production: set SNIFFER_AUTH_TOKEN to a long random string and pass the
+      # same value to the dashboard URL as ?token=…  (or use Authorization:
+      # Bearer for non-browser clients). Empty disables auth (dev only).
+      SNIFFER_AUTH_TOKEN: ${SNIFFER_AUTH_TOKEN:-}
+      # Comma-separated allowlist of Origin headers, e.g.
+      #   SNIFFER_ORIGINS=http://localhost:8080,http://10.0.4.18:8080
+      # Unset accepts any origin (CSWSH risk). Empty string rejects browsers.
+      SNIFFER_ORIGINS: ${SNIFFER_ORIGINS-}
       SNIFFER_EXTRA_ARGS: "--modbus-port 502 --mqtt-port 1883 --mqttws-port 8083"
     volumes:
       - sniffer-data:/data

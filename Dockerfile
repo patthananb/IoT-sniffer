@@ -23,14 +23,23 @@ COPY sniffer ./sniffer
 
 ENV PYTHONUNBUFFERED=1 \
     SNIFFER_IFACE=eth0 \
+    SNIFFER_WS_HOST=0.0.0.0 \
     SNIFFER_WS_PORT=8765 \
-    SNIFFER_DB=/data/sniffer.db
+    SNIFFER_DB=/data/sniffer.db \
+    SNIFFER_AUTH_TOKEN= \
+    SNIFFER_ORIGINS=
 
 EXPOSE 8765
 VOLUME ["/data"]
 
+# The CLI defaults --ws-host to 127.0.0.1 (safer for direct python users).
+# In the container we re-expose 0.0.0.0 by default so the dashboard on another
+# host can reach the WS. Combine with SNIFFER_AUTH_TOKEN + SNIFFER_ORIGINS for prod.
+# SNIFFER_AUTH_TOKEN / SNIFFER_ORIGINS are read by argparse defaults and only
+# need to be present in the environment.
 ENTRYPOINT ["sh", "-c", "python -m sniffer.server \
     --iface ${SNIFFER_IFACE} \
+    --ws-host ${SNIFFER_WS_HOST} \
     --ws-port ${SNIFFER_WS_PORT} \
     --db ${SNIFFER_DB} \
     ${SNIFFER_EXTRA_ARGS:-}"]

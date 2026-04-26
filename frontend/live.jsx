@@ -15,7 +15,12 @@
 // (see `sim.jsx` for the ground-truth field list).
 
 (function () {
-  const DEFAULT_URL = `ws://${location.hostname || 'localhost'}:8765`;
+  // If the page URL has ?token=..., forward it to the WS as ?token=...
+  // (the backend also accepts an Authorization: Bearer header).
+  const _pageToken = new URLSearchParams(location.search).get('token');
+  const _qs = _pageToken ? `?token=${encodeURIComponent(_pageToken)}` : '';
+  const _scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  const DEFAULT_URL = `${_scheme}://${location.hostname || 'localhost'}:8765${_qs}`;
 
   const PROTO_LABEL = {
     'modbus': 'Modbus/TCP',

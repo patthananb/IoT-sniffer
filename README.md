@@ -99,10 +99,32 @@ Optional flags:
 | `--modbus-port`   | `502`       | Modbus TCP port                           |
 | `--mqtt-port`     | `1883`      | MQTT over TCP port                        |
 | `--mqttws-port`   | `8083`      | MQTT over WebSocket port                  |
-| `--ws-host`       | `0.0.0.0`   | Push server bind host                     |
+| `--ws-host`       | `127.0.0.1` | Push server bind host (use `0.0.0.0` to expose; combine with auth + origins) |
 | `--ws-port`       | `8765`      | Push server port                          |
 | `--db`            | `sniffer.db`| SQLite database path                      |
+| `--auth-token`    | *(empty)*   | Bearer token required to connect (env: `SNIFFER_AUTH_TOKEN`); empty disables auth |
+| `--origins`       | *(unset)*   | Comma-separated allowlist of `Origin` headers (env: `SNIFFER_ORIGINS`); unset accepts any |
 | `--log-level`     | `INFO`      | Python logging level                      |
+
+### Authentication
+
+By default the WS server binds to `127.0.0.1` and runs **with no auth** — fine
+for local dev. To expose it on a network you need both:
+
+```bash
+export SNIFFER_AUTH_TOKEN=$(openssl rand -hex 32)
+export SNIFFER_ORIGINS="http://10.0.4.18:8080"
+python -m sniffer.server --iface eth0 --ws-host 0.0.0.0
+```
+
+Then load the dashboard with the same token in the URL:
+
+```
+http://10.0.4.18:8080/?token=<your-token>
+```
+
+The frontend forwards `?token=` from the page URL to the WebSocket. Non-browser
+clients can use `Authorization: Bearer <token>` instead.
 
 The BPF filter applied at kernel level is:
 
@@ -153,9 +175,21 @@ Override defaults with environment variables when invoking compose:
 | Env var               | Default                                               | Notes |
 | --------------------- | ----------------------------------------------------- | ----- |
 | `SNIFFER_IFACE`       | `eth0`                                                | capture interface |
+| `SNIFFER_WS_HOST`     | `0.0.0.0`                                             | WS bind host (compose default exposes; pair with auth in prod) |
 | `SNIFFER_WS_PORT`     | `8765`                                                | WebSocket push port |
 | `SNIFFER_DB`          | `/data/sniffer.db`                                    | SQLite path inside the container |
+| `SNIFFER_AUTH_TOKEN`  | *(empty)*                                             | Bearer token; empty disables auth |
+| `SNIFFER_ORIGINS`     | *(unset)*                                             | comma-separated `Origin` allowlist; unset accepts any |
 | `SNIFFER_EXTRA_ARGS`  | `--modbus-port 502 --mqtt-port 1883 --mqttws-port 8083` | passed through to `sniffer.server` |
+
+For production with docker compose:
+
+```bash
+export SNIFFER_AUTH_TOKEN=$(openssl rand -hex 32)
+export SNIFFER_ORIGINS="http://$(hostname -I | awk '{print $1}'):8080"
+docker compose up -d --build
+echo "open http://$(hostname -I | awk '{print $1}'):8080/?token=$SNIFFER_AUTH_TOKEN"
+```
 
 Demo mode (no backend, dashboard only): `docker compose up -d dashboard`
 then open <http://localhost:8080/?demo=1>.

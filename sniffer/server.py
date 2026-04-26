@@ -31,9 +31,12 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import secrets
 import signal
 import time
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import websockets
 
@@ -46,14 +49,53 @@ log = logging.getLogger("sniffer.server")
 
 
 class PushServer:
-    def __init__(self, engine: CaptureEngine, store: Store, host: str = "0.0.0.0", port: int = 8765) -> None:
+    def __init__(
+        self,
+        engine: CaptureEngine,
+        store: Store,
+        host: str = "127.0.0.1",
+        port: int = 8765,
+        auth_token: str = "",
+        origins: list[str] | None = None,
+    ) -> None:
         self.engine = engine
         self.store = store
         self.host = host
         self.port = port
+        # Empty token disables auth (matches pre-1.5 behaviour).
+        self.auth_token = auth_token or ""
+        # None  → accept any Origin (legacy); pass-through to websockets.serve.
+        # []    → reject browser clients (only non-Origin clients allowed).
+        # list  → allowlist of exact Origin strings.
+        self.origins = origins
         self.clients: set[websockets.WebSocketServerProtocol] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stop = asyncio.Event()
+
+    def _check_auth(self, ws) -> bool:
+        if not self.auth_token:
+            return True
+        request = getattr(ws, "request", None)
+        if request is None:
+            return False
+        headers = getattr(request, "headers", None)
+        auth_hdr = ""
+        if headers is not None:
+            try:
+                auth_hdr = headers.get("Authorization", "") or ""
+            except Exception:
+                auth_hdr = ""
+        if auth_hdr.startswith("Bearer "):
+            if secrets.compare_digest(auth_hdr[7:], self.auth_token):
+                return True
+        path = getattr(request, "path", "") or ""
+        try:
+            qs_token = parse_qs(urlparse(path).query).get("token", [""])[0]
+        except Exception:
+            qs_token = ""
+        if qs_token and secrets.compare_digest(qs_token, self.auth_token):
+            return True
+        return False
 
     # --- scapy-thread → asyncio-loop bridge ---
     def _publish_frame(self, f: Frame) -> None:
@@ -67,7 +109,9 @@ class PushServer:
         if not self.clients:
             return
         dead: list = []
-        for ws in self.clients:
+        # Snapshot: a client may connect/disconnect while `await ws.send` yields,
+        # which would otherwise raise "Set changed size during iteration".
+        for ws in list(self.clients):
             try:
                 await ws.send(msg)
             except Exception:
@@ -106,6 +150,14 @@ class PushServer:
                 log.exception("perf tick failed: %s", e)
 
     async def _handler(self, ws) -> None:
+        if not self._check_auth(ws):
+            log.warning("rejecting unauthenticated WS connection from %s",
+                        getattr(ws, "remote_address", "?"))
+            try:
+                await ws.close(code=1008, reason="unauthorized")
+            except Exception:
+                pass
+            return
         self.clients.add(ws)
         try:
             # Backfill the last ~200 frames so a fresh tab isn't empty.
@@ -160,7 +212,18 @@ class PushServer:
         self.engine.start()
         self.store.start()
         log.info("WebSocket push server listening on ws://%s:%s", self.host, self.port)
-        async with websockets.serve(self._handler, self.host, self.port):
+        if self.auth_token:
+            log.info("auth: bearer token required (header or ?token=)")
+        else:
+            log.warning("auth: DISABLED — set --auth-token / SNIFFER_AUTH_TOKEN to enable")
+        if self.origins is None:
+            log.warning("origins: any (browser CSWSH possible) — set --origins to restrict")
+        else:
+            log.info("origins allowlist: %s", self.origins or "(non-browser only)")
+        serve_kwargs: dict[str, Any] = {}
+        if self.origins is not None:
+            serve_kwargs["origins"] = self.origins
+        async with websockets.serve(self._handler, self.host, self.port, **serve_kwargs):
             ticker = asyncio.create_task(self._metrics_ticker())
             perf_ticker = asyncio.create_task(self._perf_ticker())
             try:
@@ -188,11 +251,35 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--modbus-port", type=int, default=502)
     p.add_argument("--mqtt-port", type=int, default=1883)
     p.add_argument("--mqttws-port", type=int, default=8083)
-    p.add_argument("--ws-host", default="0.0.0.0", help="push server bind host")
+    p.add_argument(
+        "--ws-host",
+        default=os.environ.get("SNIFFER_WS_HOST", "127.0.0.1"),
+        help="push server bind host (default 127.0.0.1; use 0.0.0.0 to expose, "
+             "but combine with --auth-token + --origins)",
+    )
     p.add_argument("--ws-port", type=int, default=8765)
     p.add_argument("--db", default="sniffer.db", help="SQLite database path")
     p.add_argument("--log-level", default="INFO")
+    p.add_argument(
+        "--auth-token",
+        default=os.environ.get("SNIFFER_AUTH_TOKEN", ""),
+        help="bearer token required for WS connections (default $SNIFFER_AUTH_TOKEN; "
+             "empty disables auth)",
+    )
+    p.add_argument(
+        "--origins",
+        default=os.environ.get("SNIFFER_ORIGINS"),
+        help="comma-separated allowlist of Origin headers (default $SNIFFER_ORIGINS; "
+             "unset accepts any; empty string rejects browsers)",
+    )
     args = p.parse_args(argv)
+
+    # Unset or empty → no Origin check. Otherwise comma-separated allowlist.
+    origins: list[str] | None
+    if args.origins is None or not args.origins.strip():
+        origins = None
+    else:
+        origins = [o.strip() for o in args.origins.split(",") if o.strip()]
 
     logging.basicConfig(
         level=args.log_level.upper(),
@@ -208,7 +295,11 @@ def main(argv: list[str] | None = None) -> int:
     # publish is wired up inside PushServer.serve() once the loop is alive.
     engine = CaptureEngine(cfg=cfg, publish=lambda _f: None)
     store = Store(db_path=args.db)
-    server = PushServer(engine, store, host=args.ws_host, port=args.ws_port)
+    server = PushServer(
+        engine, store,
+        host=args.ws_host, port=args.ws_port,
+        auth_token=args.auth_token, origins=origins,
+    )
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
