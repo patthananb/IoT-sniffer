@@ -829,34 +829,6 @@ function PacketInspector({ packet }) {
         )}
       </section>
 
-      <section className="packet-section workbench">
-        <details open>
-          <summary>publish workbench</summary>
-          <div className="workbench-grid">
-            <label>
-              <span>topic</span>
-              <input value={topic.replace('/regs/', '/cmd/')} readOnly />
-            </label>
-            <label>
-              <span>payload (hex bytes)</span>
-              <textarea readOnly value={bytes.slice(0, 12).map(b => hex(b)).join(' ') || '01 06 9C 41 01 F4'} />
-            </label>
-            <div className="template-grid">
-              <Template label="read holding" bytes="01 03 9C 40 00 01"/>
-              <Template label="read input" bytes="01 04 75 30 00 01"/>
-              <Template label="write single" bytes="01 06 9C 41 01 F4"/>
-              <Template label="write multi" bytes="01 10 9C 41 00 02 04 01 F4 03 E8"/>
-            </div>
-            <div className="workbench-actions">
-              <select defaultValue="1"><option value="0">qos 0</option><option value="1">qos 1</option><option value="2">qos 2</option></select>
-              <label className="check"><input type="checkbox" readOnly /> retain</label>
-              <label className="check"><input type="checkbox" checked readOnly /> hex mode</label>
-              <button>save preset</button>
-              <button className="publish">publish</button>
-            </div>
-          </div>
-        </details>
-      </section>
     </div>
   );
 }
@@ -884,15 +856,6 @@ function ValueBox({ label, value }) {
       <span>{label}</span>
       <b>{value}</b>
     </div>
-  );
-}
-
-function Template({ label, bytes }) {
-  return (
-    <button className="template">
-      <b>{label}</b>
-      <span>{bytes}</span>
-    </button>
   );
 }
 
