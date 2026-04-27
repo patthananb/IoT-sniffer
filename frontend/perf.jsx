@@ -681,7 +681,7 @@
         />
         <KpiStrip data={data} rows={rows} metricsSeries={metricsSeries || []}/>
         <ProtocolComparison rows={rows}/>
-        <div className="perf-grid two">
+        <div className="perf-grid single">
           <ChartPanel
             title="Latency over time"
             note="p50 solid, p95 dashed, p99 dotted across 5 second buckets"
@@ -700,8 +700,6 @@
           >
             <LatencyCdfChart rows={rows}/>
           </ChartPanel>
-        </div>
-        <div className="perf-grid two compact">
           <IatPanel rows={rows}/>
           <SizePanel rows={rows}/>
         </div>

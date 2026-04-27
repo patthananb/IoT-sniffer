@@ -1299,6 +1299,9 @@ button { font-family: inherit; color: inherit; cursor: pointer; border: 0; backg
 .perf-grid.two {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
+.perf-grid.single {
+  grid-template-columns: minmax(0, 1fr);
+}
 .perf-grid.compact {
   align-items: stretch;
 }
