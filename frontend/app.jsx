@@ -189,6 +189,7 @@ function shortPacketTitle(packet) {
 }
 
 const PAYLOAD_RENDER_LIMIT = 1024;
+const RAW_PACKET_RENDER_LIMIT = 4096;
 const HEX_ROW_SIZE = 16;
 
 function isByte(n) {
@@ -201,6 +202,12 @@ function uniqueSorted(nums) {
 
 function bytesFromIndexes(frameBytes, indexes) {
   return uniqueSorted(indexes).map(i => frameBytes[i]).filter(isByte);
+}
+
+function pairsFromBytes(bytes, baseOffset = 0) {
+  return (bytes || [])
+    .map((byte, i) => ({ offset: baseOffset + i, byte }))
+    .filter(p => isByte(p.byte));
 }
 
 function fieldRanges(indexes) {
@@ -280,6 +287,15 @@ function prettyJson(text) {
   } catch {
     return '';
   }
+}
+
+function bytesToHexText(bytes) {
+  if (!bytes.length) return '';
+  const rows = [];
+  for (let i = 0; i < bytes.length; i += HEX_ROW_SIZE) {
+    rows.push(bytes.slice(i, i + HEX_ROW_SIZE).map(b => hex(b)).join(' '));
+  }
+  return rows.join('\n');
 }
 
 function bytePairRows(pairs) {
@@ -439,9 +455,13 @@ function PacketInspector({ packet }) {
     : bytes;
   const payloadPairs = payloadIndexes.length
     ? payloadIndexes.map(i => ({ offset: i, byte: bytes[i] })).filter(p => isByte(p.byte))
-    : payloadBytes.map((byte, i) => ({ offset: i, byte }));
+    : pairsFromBytes(payloadBytes);
   const shownPayloadPairs = payloadPairs.slice(0, PAYLOAD_RENDER_LIMIT);
   const shownPayloadBytes = shownPayloadPairs.map(p => p.byte);
+  const rawBytes = bytes.filter(isByte);
+  const shownRawBytes = rawBytes.slice(0, RAW_PACKET_RENDER_LIMIT);
+  const rawPacketPairs = pairsFromBytes(shownRawBytes);
+  const rawHexText = bytesToHexText(shownRawBytes);
   const payloadLen = reportedPayloadLen != null ? reportedPayloadLen : (payloadIndexes.length || payloadBytes.length || bytes.length);
   const payloadOffsetLabel = payloadIndexes.length ? fieldRanges(payloadIndexes) : (directPayloadBytes.length ? 'payload preview' : 'frame bytes');
   const payloadText = decodeUtf8(shownPayloadBytes);
@@ -452,6 +472,7 @@ function PacketInspector({ packet }) {
     (payloadEncoding === 'binary / mixed' ? payloadAscii : payloadText) ||
     'no payload bytes captured';
   const payloadTruncated = payloadPairs.length > shownPayloadPairs.length || payloadLen > shownPayloadBytes.length;
+  const rawPacketTruncated = rawBytes.length > shownRawBytes.length;
   const registerField = fields.find(f => f.name === 'Register Values');
   const registerBytes = registerField
     ? (registerField.bytes || []).map(i => bytes[i]).filter(b => b !== undefined)
@@ -524,8 +545,8 @@ function PacketInspector({ packet }) {
             <pre className={"payload-text" + (payloadJson ? ' json' : '')}>{payloadDisplayText}</pre>
           </div>
           <div className="payload-block">
-            <div className="sub-label">hex + ascii</div>
-            <HexDump pairs={shownPayloadPairs}/>
+            <div className="sub-label">payload hex + ascii</div>
+            <HexDump pairs={shownPayloadPairs} emptyLabel="no payload bytes"/>
           </div>
         </div>
         {payloadTruncated && (
@@ -533,6 +554,23 @@ function PacketInspector({ packet }) {
             showing first {shownPayloadBytes.length} captured bytes; payload reports {payloadLen} bytes
           </div>
         )}
+        <div className="payload-raw">
+          <div className="payload-raw-head">
+            <div className="sub-label">raw packet hex</div>
+            <span>{rawBytes.length} bytes from frame offset 0000</span>
+          </div>
+          <pre className="raw-hex-text">{rawHexText || 'no raw packet bytes captured'}</pre>
+          <div className="payload-raw-head secondary">
+            <div className="sub-label">raw packet hex + ascii</div>
+            <span>offset / 16 bytes / ascii</span>
+          </div>
+          <HexDump pairs={rawPacketPairs} emptyLabel="no raw packet bytes"/>
+          {rawPacketTruncated && (
+            <div className="payload-note raw">
+              showing first {shownRawBytes.length} raw bytes; packet has {rawBytes.length} bytes
+            </div>
+          )}
+        </div>
         {registerWord != null && (
           <div className="payload-block compact">
             <div className="sub-label">first register bits</div>
@@ -565,9 +603,9 @@ function PacketInspector({ packet }) {
   );
 }
 
-function HexDump({ pairs }) {
+function HexDump({ pairs, emptyLabel = 'no bytes' }) {
   if (!pairs.length) {
-    return <div className="hex-dump empty">no payload bytes</div>;
+    return <div className="hex-dump empty">{emptyLabel}</div>;
   }
   return (
     <div className="hex-dump">

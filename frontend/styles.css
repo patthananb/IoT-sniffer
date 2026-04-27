@@ -2302,6 +2302,44 @@ html, body {
   font-family: var(--mono);
   font-size: 10.5px;
 }
+.payload-raw {
+  padding: 0 12px 12px;
+}
+.payload-raw-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.payload-raw-head.secondary {
+  margin-top: 10px;
+}
+.payload-raw-head span {
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-align: right;
+}
+.raw-hex-text {
+  max-height: 142px;
+  margin: 0;
+  padding: 9px 10px;
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  background: #fffaf0;
+  color: #4d3a24;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.payload-raw .hex-dump {
+  max-height: 320px;
+}
+.payload-note.raw {
+  margin: 8px 0 0;
+}
 .bit-grid {
   display: grid;
   grid-template-columns: repeat(16, 1fr);
@@ -2651,6 +2689,7 @@ html, body {
 :root[data-theme="dark"] .rail-filter button,
 :root[data-theme="dark"] .payload-stat,
 :root[data-theme="dark"] .payload-text,
+:root[data-theme="dark"] .raw-hex-text,
 :root[data-theme="dark"] .hex-dump,
 :root[data-theme="dark"] .bit-grid,
 :root[data-theme="dark"] .value-box,
@@ -2672,6 +2711,7 @@ html, body {
 }
 :root[data-theme="dark"] .rail-summary,
 :root[data-theme="dark"] .payload-text,
+:root[data-theme="dark"] .raw-hex-text,
 :root[data-theme="dark"] .field-value,
 :root[data-theme="dark"] .hex-ascii {
   color: #f0a455;
