@@ -247,7 +247,7 @@
 
   function ExportBar({ onExport, busy, lastError, format, onFormatChange }) {
     const buttons = [
-      ['csv_samples', 'Samples'],
+      ['csv_samples', 'Download'],
       ['csv_per_flow', 'Flows'],
       ['csv_history', 'History'],
     ];
