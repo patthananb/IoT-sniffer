@@ -1222,7 +1222,29 @@ button { font-family: inherit; color: inherit; cursor: pointer; border: 0; backg
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
-  min-width: 260px;
+  min-width: 330px;
+}
+.perf-export-format {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+.perf-export-format button {
+  min-width: 48px;
+  padding: 6px 8px;
+  border-left: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.perf-export-format button:first-child {
+  border-left: 0;
+}
+.perf-export-format button.active {
+  background: var(--ok-soft);
+  color: var(--ok);
 }
 .perf-export-btn {
   min-width: 68px;

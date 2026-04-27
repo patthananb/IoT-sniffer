@@ -245,7 +245,7 @@
     return <div className="perf-chart-empty">{label}</div>;
   }
 
-  function ExportBar({ onExport, busy, lastError }) {
+  function ExportBar({ onExport, busy, lastError, format, onFormatChange }) {
     const buttons = [
       ['csv_samples', 'Samples'],
       ['csv_per_flow', 'Flows'],
@@ -253,8 +253,20 @@
     ];
     return (
       <div className="perf-export">
+        <div className="perf-export-format" role="group" aria-label="Export format">
+          {['csv', 'xlsx'].map(fmt => (
+            <button
+              key={fmt}
+              className={format === fmt ? 'active' : ''}
+              disabled={busy}
+              onClick={() => onFormatChange(fmt)}
+            >
+              {fmt.toUpperCase()}
+            </button>
+          ))}
+        </div>
         {buttons.map(([kind, label]) => (
-          <button key={kind} className="perf-export-btn" disabled={busy} onClick={() => onExport(kind)}>
+          <button key={kind} className="perf-export-btn" disabled={busy} onClick={() => onExport(kind, format)}>
             {label}
           </button>
         ))}
@@ -264,7 +276,7 @@
     );
   }
 
-  function PerformanceHeader({ data, rows, metricsSeries, demo, conn, onExport, busy, lastError }) {
+  function PerformanceHeader({ data, rows, metricsSeries, demo, conn, onExport, busy, lastError, exportFormat, onExportFormat }) {
     const latest = latestObservedTs(data);
     const connLabel = demo ? 'demo data' : conn?.state === 'ok' ? 'live socket' : 'local export mode';
     return (
@@ -278,7 +290,13 @@
             <span>{latest ? `last sample ${new Date(latest * 1000).toLocaleTimeString()}` : 'waiting for samples'}</span>
           </div>
         </div>
-        <ExportBar onExport={onExport} busy={busy} lastError={lastError}/>
+        <ExportBar
+          onExport={onExport}
+          busy={busy}
+          lastError={lastError}
+          format={exportFormat}
+          onFormatChange={onExportFormat}
+        />
       </div>
     );
   }
@@ -613,12 +631,13 @@
   function PerformancePanel({ perf, packets, conn, demo, metricsSeries }) {
     const [busy, setBusy] = useState(false);
     const [lastError, setLastError] = useState(null);
+    const [exportFormat, setExportFormat] = useState('csv');
     const data = (perf && perf.per_proto) ? perf : (demo ? synthFromPackets(packets) : null);
     const rows = useMemo(() => protoRows(data?.per_proto || {}), [data]);
     const empty = !data || (Object.keys(data.per_proto || {}).length === 0 &&
                             (data.per_flow || []).length === 0);
 
-    const onExport = async (kind) => {
+    const onExport = async (kind, format = 'csv') => {
       setBusy(true);
       setLastError(null);
       try {
@@ -649,7 +668,11 @@
           csv = reply.data || '';
           filename = reply.filename || `${kind}.csv`;
         }
-        downloadCsv(filename, csv);
+        if (format === 'xlsx') {
+          downloadXlsx(csvNameToXlsx(filename), csv, sheetNameForKind(kind));
+        } else {
+          downloadCsv(filename, csv);
+        }
       } catch (e) {
         setLastError(e.message || 'export failed');
       } finally {
@@ -663,6 +686,7 @@
           <PerformanceHeader
             data={data || { window_s: 300 }} rows={rows} metricsSeries={metricsSeries || []}
             demo={demo} conn={conn} onExport={onExport} busy={busy} lastError={lastError}
+            exportFormat={exportFormat} onExportFormat={setExportFormat}
           />
           <div className="perf-empty">
             <b>No performance data yet.</b>
@@ -678,6 +702,7 @@
         <PerformanceHeader
           data={data} rows={rows} metricsSeries={metricsSeries || []}
           demo={demo} conn={conn} onExport={onExport} busy={busy} lastError={lastError}
+          exportFormat={exportFormat} onExportFormat={setExportFormat}
         />
         <KpiStrip data={data} rows={rows} metricsSeries={metricsSeries || []}/>
         <ProtocolComparison rows={rows}/>
@@ -710,6 +735,25 @@
 
   function downloadCsv(name, csv) {
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    downloadBlob(name, blob);
+  }
+
+  function downloadXlsx(name, csv, sheetName) {
+    if (!window.XLSX) {
+      throw new Error('XLSX exporter unavailable');
+    }
+    const rows = csvToRows(csv);
+    const wb = window.XLSX.utils.book_new();
+    const ws = window.XLSX.utils.aoa_to_sheet(rows);
+    window.XLSX.utils.book_append_sheet(wb, ws, safeSheetName(sheetName));
+    const out = window.XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([out], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
+    downloadBlob(name, blob);
+  }
+
+  function downloadBlob(name, blob) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -720,6 +764,70 @@
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     }, 100);
+  }
+
+  function csvNameToXlsx(name) {
+    return String(name || 'performance_export.csv').replace(/\.csv$/i, '') + '.xlsx';
+  }
+
+  function sheetNameForKind(kind) {
+    if (kind === 'csv_samples') return 'Latency samples';
+    if (kind === 'csv_per_flow') return 'Per-flow stats';
+    if (kind === 'csv_history') return 'Metrics history';
+    return 'Export';
+  }
+
+  function safeSheetName(name) {
+    return String(name || 'Export').replace(/[:\\/?*\[\]]/g, ' ').slice(0, 31) || 'Export';
+  }
+
+  function csvToRows(csv) {
+    const rows = [];
+    let row = [];
+    let cell = '';
+    let quoted = false;
+    const text = String(csv || '');
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      const next = text[i + 1];
+      if (quoted) {
+        if (ch === '"' && next === '"') {
+          cell += '"';
+          i++;
+        } else if (ch === '"') {
+          quoted = false;
+        } else {
+          cell += ch;
+        }
+      } else if (ch === '"') {
+        quoted = true;
+      } else if (ch === ',') {
+        row.push(coerceSheetCell(cell));
+        cell = '';
+      } else if (ch === '\n') {
+        row.push(coerceSheetCell(cell));
+        rows.push(row);
+        row = [];
+        cell = '';
+      } else if (ch !== '\r') {
+        cell += ch;
+      }
+    }
+    if (cell || row.length) {
+      row.push(coerceSheetCell(cell));
+      rows.push(row);
+    }
+    return rows.length ? rows : [['empty']];
+  }
+
+  function coerceSheetCell(value) {
+    const trimmed = String(value).trim();
+    if (trimmed === '') return '';
+    if (/^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(trimmed)) {
+      const n = Number(trimmed);
+      if (Number.isFinite(n)) return n;
+    }
+    return value;
   }
 
   window.PerformanceTab = PerformancePanel;
