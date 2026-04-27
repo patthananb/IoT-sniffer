@@ -188,6 +188,135 @@ function shortPacketTitle(packet) {
   return `${packet.protoLabel || packet.proto} / ${packet.type || 'packet'}`;
 }
 
+const PAYLOAD_RENDER_LIMIT = 1024;
+const HEX_ROW_SIZE = 16;
+
+function isByte(n) {
+  return Number.isInteger(n) && n >= 0 && n <= 255;
+}
+
+function uniqueSorted(nums) {
+  return Array.from(new Set((nums || []).filter(Number.isInteger))).sort((a, b) => a - b);
+}
+
+function bytesFromIndexes(frameBytes, indexes) {
+  return uniqueSorted(indexes).map(i => frameBytes[i]).filter(isByte);
+}
+
+function fieldRanges(indexes) {
+  const sorted = uniqueSorted(indexes);
+  if (!sorted.length) return '-';
+  const ranges = [];
+  let start = sorted[0];
+  let prev = sorted[0];
+  for (let i = 1; i < sorted.length; i++) {
+    const n = sorted[i];
+    if (n === prev + 1) {
+      prev = n;
+      continue;
+    }
+    ranges.push(start === prev ? `${start}` : `${start}-${prev}`);
+    start = prev = n;
+  }
+  ranges.push(start === prev ? `${start}` : `${start}-${prev}`);
+  return ranges.slice(0, 4).join(', ') + (ranges.length > 4 ? ', ...' : '');
+}
+
+function isPayloadLikeField(field) {
+  const name = String(field?.name || '').toLowerCase();
+  const desc = String(field?.desc || '').toLowerCase();
+  return name === 'payload' ||
+    name === 'register values' ||
+    desc.includes('payload') ||
+    name.includes('payload');
+}
+
+function payloadLikeFields(fields) {
+  return fields.filter(isPayloadLikeField);
+}
+
+function payloadIndexesFor(packet, fields, frameBytes) {
+  const exact = fields.find(f => f.name === 'Payload' || f.name === 'Register Values');
+  if (exact?.bytes?.length) return uniqueSorted(exact.bytes);
+
+  const payloadFields = payloadLikeFields(fields);
+  if (payloadFields.length) {
+    return uniqueSorted(payloadFields.flatMap(f => f.bytes || []));
+  }
+
+  if (packet?.proto === 'modbus' && frameBytes.length > 8) {
+    return Array.from({ length: frameBytes.length - 8 }, (_, i) => i + 8);
+  }
+
+  return [];
+}
+
+function decodeUtf8(bytes) {
+  if (!bytes.length || typeof TextDecoder === 'undefined') return '';
+  try {
+    return new TextDecoder('utf-8', { fatal: false }).decode(Uint8Array.from(bytes));
+  } catch {
+    return '';
+  }
+}
+
+function asciiFromBytes(bytes) {
+  return bytes.map(b => (b >= 32 && b <= 126) ? String.fromCharCode(b) : '.').join('');
+}
+
+function payloadEncodingLabel(bytes, decoded) {
+  if (!bytes.length) return 'empty';
+  const printable = bytes.filter(b => b === 9 || b === 10 || b === 13 || (b >= 32 && b <= 126)).length;
+  if (decoded && !decoded.includes('\uFFFD') && printable / bytes.length > 0.75) return 'utf-8 text';
+  if (printable / bytes.length > 0.9) return 'ascii text';
+  return 'binary / mixed';
+}
+
+function prettyJson(text) {
+  const t = String(text || '').trim();
+  if (!t || !'{['.includes(t[0])) return '';
+  try {
+    return JSON.stringify(JSON.parse(t), null, 2);
+  } catch {
+    return '';
+  }
+}
+
+function bytePairRows(pairs) {
+  const rows = [];
+  for (let i = 0; i < pairs.length; i += HEX_ROW_SIZE) {
+    const slice = pairs.slice(i, i + HEX_ROW_SIZE);
+    rows.push({
+      offset: slice[0]?.offset ?? i,
+      bytes: slice.map(p => p.byte),
+    });
+  }
+  return rows;
+}
+
+function wordsFromBytes(bytes, limit = 24) {
+  const rows = [];
+  for (let i = 0; i + 1 < bytes.length && rows.length < limit; i += 2) {
+    const u16 = (bytes[i] << 8) | bytes[i + 1];
+    rows.push({
+      index: rows.length,
+      u16,
+      i16: u16 > 0x7FFF ? u16 - 0x10000 : u16,
+      hex: `0x${hex(u16, 4)}`,
+      bits: u16.toString(2).padStart(16, '0'),
+    });
+  }
+  return rows;
+}
+
+function fieldGroupName(group) {
+  if (group === 0) return 'fixed';
+  if (group === 1 || group === 2) return 'variable';
+  if (group === 3 || group === 4) return 'payload';
+  if (group === 5) return 'error';
+  return 'field';
+}
+
 function PacketRail({ packets, selectedId, onSelect, filter, setFilter, autoscroll, setAutoscroll, capturing, onToggleCapture, duration }) {
   const scrollerRef = useRef(null);
   const shown = useMemo(() => {
@@ -298,7 +427,31 @@ function PacketInspector({ packet }) {
   const fields = packet.fieldMap || [];
   const fixed = fields.slice(0, Math.min(5, fields.length));
   const variable = fields.slice(Math.min(5, fields.length), Math.min(10, fields.length));
-  const payloadField = fields.find(f => f.name === 'Payload' || f.name === 'Register Values');
+  const payloadFields = payloadLikeFields(fields);
+  const payloadField = fields.find(f => f.name === 'Payload' || f.name === 'Register Values') || payloadFields[0] || null;
+  const payloadIndexes = payloadIndexesFor(packet, fields, bytes);
+  const payloadBytesFromMap = payloadIndexes.length ? bytesFromIndexes(bytes, payloadIndexes) : [];
+  const directPayloadBytes = (packet.payloadBytes || []).filter(isByte);
+  const reportedPayloadLen = Number.isInteger(packet.payloadLen) ? packet.payloadLen : null;
+  const payloadBytes = payloadBytesFromMap.length ? payloadBytesFromMap
+    : directPayloadBytes.length ? directPayloadBytes
+    : reportedPayloadLen === 0 ? []
+    : bytes;
+  const payloadPairs = payloadIndexes.length
+    ? payloadIndexes.map(i => ({ offset: i, byte: bytes[i] })).filter(p => isByte(p.byte))
+    : payloadBytes.map((byte, i) => ({ offset: i, byte }));
+  const shownPayloadPairs = payloadPairs.slice(0, PAYLOAD_RENDER_LIMIT);
+  const shownPayloadBytes = shownPayloadPairs.map(p => p.byte);
+  const payloadLen = reportedPayloadLen != null ? reportedPayloadLen : (payloadIndexes.length || payloadBytes.length || bytes.length);
+  const payloadOffsetLabel = payloadIndexes.length ? fieldRanges(payloadIndexes) : (directPayloadBytes.length ? 'payload preview' : 'frame bytes');
+  const payloadText = decodeUtf8(shownPayloadBytes);
+  const payloadJson = prettyJson(payloadText);
+  const payloadAscii = asciiFromBytes(shownPayloadBytes);
+  const payloadEncoding = payloadEncodingLabel(shownPayloadBytes, payloadText);
+  const payloadDisplayText = payloadJson ||
+    (payloadEncoding === 'binary / mixed' ? payloadAscii : payloadText) ||
+    'no payload bytes captured';
+  const payloadTruncated = payloadPairs.length > shownPayloadPairs.length || payloadLen > shownPayloadBytes.length;
   const registerField = fields.find(f => f.name === 'Register Values');
   const registerBytes = registerField
     ? (registerField.bytes || []).map(i => bytes[i]).filter(b => b !== undefined)
@@ -310,6 +463,16 @@ function PacketInspector({ packet }) {
   const showQos = isMqtt && packet.type === 'PUBLISH' && qos != null;
   const registerWord = registerBytes.length >= 2 ? ((registerBytes[0] << 8) | registerBytes[1]) : null;
   const registerSigned = registerWord != null && registerWord > 0x7FFF ? registerWord - 0x10000 : registerWord;
+  const registerWords = registerBytes.length >= 2
+    ? wordsFromBytes(registerBytes)
+    : (packet.proto === 'modbus' ? wordsFromBytes(payloadBytes) : []);
+  const payloadStats = [
+    ['payload_len', `${payloadLen} bytes`],
+    ['captured', `${payloadBytes.length} bytes`],
+    ['offsets', payloadOffsetLabel],
+    ['encoding', payloadEncoding],
+    ['field', payloadField ? `${payloadField.name} (${payloadField.desc})` : 'raw frame fallback'],
+  ];
 
   return (
     <div className="packet-inspector">
@@ -346,36 +509,47 @@ function PacketInspector({ packet }) {
       </div>
 
       <section className="packet-section payload">
-        <div className="section-title">payload - {payloadField ? payloadField.desc : `${bytes.length} bytes`}</div>
-        <div className={"payload-grid" + (registerWord == null ? " single" : "")}>
-          <div>
-            <div className="sub-label">hex dump</div>
-            <div className="hex-strip">
-              <span>0000</span>
-              {(bytes.slice(0, 18).length ? bytes.slice(0, 18) : [0, 0]).map((b, i) => (
-                <b key={i}>{hex(b)}</b>
-              ))}
-              {bytes.length > 18 && <em>..</em>}
+        <div className="section-title">payload - {payloadField ? payloadField.desc : `${payloadLen} bytes`}</div>
+        <div className="payload-stats">
+          {payloadStats.map(([label, value]) => (
+            <div className="payload-stat" key={label}>
+              <span>{label}</span>
+              <b>{value}</b>
+            </div>
+          ))}
+        </div>
+        <div className="payload-detail-grid">
+          <div className="payload-block">
+            <div className="sub-label">{payloadJson ? 'decoded json' : 'decoded text'}</div>
+            <pre className={"payload-text" + (payloadJson ? ' json' : '')}>{payloadDisplayText}</pre>
+          </div>
+          <div className="payload-block">
+            <div className="sub-label">hex + ascii</div>
+            <HexDump pairs={shownPayloadPairs}/>
+          </div>
+        </div>
+        {payloadTruncated && (
+          <div className="payload-note">
+            showing first {shownPayloadBytes.length} captured bytes; payload reports {payloadLen} bytes
+          </div>
+        )}
+        {registerWord != null && (
+          <div className="payload-block compact">
+            <div className="sub-label">first register bits</div>
+            <div className="bit-grid">
+              {Array.from({ length: 16 }, (_, i) => {
+                const bit = 15 - i;
+                const on = ((registerWord >> bit) & 1) === 1;
+                return (
+                  <span className={on ? 'on' : ''} key={bit}>
+                    <b>{on ? 1 : 0}</b>
+                    <em>{bit}</em>
+                  </span>
+                );
+              })}
             </div>
           </div>
-          {registerWord != null && (
-            <div>
-              <div className="sub-label">first register bits</div>
-              <div className="bit-grid">
-                {Array.from({ length: 16 }, (_, i) => {
-                  const bit = 15 - i;
-                  const on = ((registerWord >> bit) & 1) === 1;
-                  return (
-                    <span className={on ? 'on' : ''} key={bit}>
-                      <b>{on ? 1 : 0}</b>
-                      <em>{bit}</em>
-                    </span>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
+        )}
         {registerWord != null && (
           <div className="decode-strip three">
             <ValueBox label="u16" value={registerWord}/>
@@ -383,11 +557,71 @@ function PacketInspector({ packet }) {
             <ValueBox label="hex" value={`0x${hex(registerWord, 4)}`}/>
           </div>
         )}
-        {payloadField && (
-          <pre className="payload-ascii">{String(payloadField.value || packet.summary)}</pre>
-        )}
+        {registerWords.length > 0 && <RegisterWordTable rows={registerWords}/>}
+        {fields.length > 0 && <PayloadFieldTable fields={fields}/>}
       </section>
 
+    </div>
+  );
+}
+
+function HexDump({ pairs }) {
+  if (!pairs.length) {
+    return <div className="hex-dump empty">no payload bytes</div>;
+  }
+  return (
+    <div className="hex-dump">
+      {bytePairRows(pairs).map(row => (
+        <div className="hex-dump-row" key={row.offset}>
+          <span className="hex-offset">{hex(row.offset, 4)}</span>
+          <span className="hex-bytes">
+            {row.bytes.map((b, i) => <b className="hex-byte" key={`${row.offset}-${i}`}>{hex(b)}</b>)}
+          </span>
+          <span className="hex-ascii">{asciiFromBytes(row.bytes)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PayloadFieldTable({ fields }) {
+  return (
+    <div className="payload-fields">
+      <div className="sub-label">decoded protocol fields</div>
+      <div className="payload-field-table">
+        {fields.map((f, i) => (
+          <React.Fragment key={`${f.name}-${i}`}>
+            <span className={"field-group group-" + fieldGroupName(f.group)}>{fieldGroupName(f.group)}</span>
+            <span className="field-name">{String(f.name || 'field')}</span>
+            <span className="field-offset">{fieldRanges(f.bytes || [])}</span>
+            <span className="field-value">{String(f.value ?? '')}</span>
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RegisterWordTable({ rows }) {
+  return (
+    <div className="payload-registers">
+      <div className="sub-label">uint16 word decode</div>
+      <div className="register-table">
+        <span>#</span>
+        <span>u16</span>
+        <span>i16</span>
+        <span>hex</span>
+        <span>bits</span>
+        {rows.map(row => (
+          <React.Fragment key={row.index}>
+            <b>{row.index}</b>
+            <b>{row.u16}</b>
+            <b>{row.i16}</b>
+            <b>{row.hex}</b>
+            <b>{row.bits}</b>
+          </React.Fragment>
+        ))}
+      </div>
     </div>
   );
 }

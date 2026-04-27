@@ -64,6 +64,9 @@
       latency,
       isError: !!f.is_error,
       bytes: f.raw_bytes || [],
+      payloadBytes: f.payload_bytes || [],
+      payloadLen: f.payload_len || 0,
+      transport: f.transport || '',
       fieldMap: f.field_map || [],
       meta,
     };
