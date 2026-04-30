@@ -1821,9 +1821,10 @@ html, body {
 .inspector-main {
   grid-template-columns: 268px minmax(560px, 1fr) 288px;
   min-height: 0;
-  width: min(100vw - 72px, 1380px);
+  width: calc(100vw - 36px);
+  height: calc(100% - 36px);
   justify-self: center;
-  margin: 14px 0 22px;
+  margin: 18px;
   border: 1px solid var(--border);
   background: var(--bg-panel);
   box-shadow: 0 10px 30px rgba(54, 45, 32, 0.12);
